@@ -124,9 +124,9 @@ func (r *ReconfigureReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return intctrlutil.CheckedRequeueWithError(err, reqCtx.Log,
 			errors.Wrap(err, "failed to fetch related resources").Error())
 	}
-	if resources.configSpec == nil {
+	if resources == nil || resources.configSpec == nil {
 		reqCtx.Log.Info(fmt.Sprintf("not found configSpec[%s] in the component[%s].",
-			config.Labels[constant.CMConfigurationSpecProviderLabelKey], resources.componentName))
+			config.Labels[constant.CMConfigurationSpecProviderLabelKey], getComponentName(resources)))
 		reqCtx.Recorder.Event(config,
 			corev1.EventTypeWarning,
 			appsv1alpha1.ReasonReconfigureFailed,
@@ -277,4 +277,11 @@ func (r *ReconfigureReconciler) succeed(rctx *ReconcileContext, reloadType strin
 
 	result := reconciled(returnedStatus, reloadType, parametersv1alpha1.CFinishedPhase)
 	return r.updateConfigCMStatus(rctx.RequestCtx, rctx.ConfigMap, reloadType, &result)
+}
+
+func getComponentName(resources *reconfigureRelatedResource) string {
+	if resources == nil {
+		return "unknown"
+	}
+	return resources.componentName
 }
