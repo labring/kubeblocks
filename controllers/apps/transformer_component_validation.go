@@ -91,7 +91,9 @@ func validateCompReplicas(comp *appsv1alpha1.Component, compDef *appsv1alpha1.Co
 		replicasLimit = compDef.Spec.ReplicasLimit
 	}
 	replicas := comp.Spec.Replicas
-	if replicas >= replicasLimit.MinReplicas && replicas <= replicasLimit.MaxReplicas {
+	// Allow replicas=0 (stopped state) to pass validation, as stopping a cluster is a valid operation.
+	// This prevents infinite requeue loops for stopped clusters.
+	if replicas == 0 || (replicas >= replicasLimit.MinReplicas && replicas <= replicasLimit.MaxReplicas) {
 		return nil
 	}
 	return replicasOutOfLimitError(replicas, *replicasLimit)
