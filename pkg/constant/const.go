@@ -164,6 +164,7 @@ const (
 	ExtraEnvAnnotationKey                       = "kubeblocks.io/extra-env"
 	LastRoleSnapshotVersionAnnotationKey        = "apps.kubeblocks.io/last-role-snapshot-version"
 	ComponentScaleInAnnotationKey               = "apps.kubeblocks.io/component-scale-in" // ComponentScaleInAnnotationKey specifies whether the component is scaled in
+	SnapShotForStartAnnotationKey               = "kubeblocks.io/snapshot-for-start"       // SnapShotForStartAnnotationKey saves the replicas snapshot of components before stopping the cluster.
 	DisableHAAnnotationKey                      = "kubeblocks.io/disable-ha"
 	// kubeblocks.io well-known finalizers
 	DBClusterFinalizerName         = "cluster.kubeblocks.io/finalizer"

@@ -159,7 +159,15 @@ func (t *componentWorkloadTransformer) reconcileWorkload(synthesizedComp *compon
 }
 
 func isCompStopped(synthesizedComp *component.SynthesizedComponent) bool {
-	return synthesizedComp.Stop != nil && *synthesizedComp.Stop
+	if synthesizedComp.Stop != nil && *synthesizedComp.Stop {
+		return true
+	}
+	// For backward compatibility: old stop mechanism set replicas to 0 without using Stop field.
+	// Treat replicas=0 as stopped to ensure legacy stopped components remain stopped.
+	if synthesizedComp.Replicas == 0 {
+		return true
+	}
+	return false
 }
 
 func (t *componentWorkloadTransformer) stopWorkload(protoITS *workloads.InstanceSet) {

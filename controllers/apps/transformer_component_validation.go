@@ -91,6 +91,11 @@ func validateCompReplicas(comp *appsv1alpha1.Component, compDef *appsv1alpha1.Co
 		replicasLimit = compDef.Spec.ReplicasLimit
 	}
 	replicas := comp.Spec.Replicas
+	// For backward compatibility: old stop mechanism set replicas to 0 without using Stop field.
+	// Skip validation when replicas is 0 to allow legacy stopped components to work.
+	if replicas == 0 {
+		return nil
+	}
 	if replicas >= replicasLimit.MinReplicas && replicas <= replicasLimit.MaxReplicas {
 		return nil
 	}
