@@ -20,12 +20,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package operations
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	intctrlcomp "github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
@@ -70,6 +73,11 @@ func (start StartOpsHandler) Action(reqCtx intctrlutil.RequestCtx, cli client.Cl
 		}); err != nil {
 		return err
 	}
+	// Get the replicas snapshot from annotation for backward compatibility
+	componentReplicasMap, err := getComponentReplicasSnapshot(cluster.Annotations)
+	if err != nil {
+		return intctrlutil.NewFatalError(err.Error())
+	}
 	startComp := func(compSpec *appsv1alpha1.ClusterComponentSpec, clusterCompName string) {
 		if len(startList) > 0 {
 			if _, ok := compOpsHelper.componentOpsSet[clusterCompName]; !ok {
@@ -77,6 +85,24 @@ func (start StartOpsHandler) Action(reqCtx intctrlutil.RequestCtx, cli client.Cl
 			}
 		}
 		compSpec.Stop = nil
+		// For backward compatibility: old stop mechanism set replicas to 0.
+		// Restore replicas from snapshot annotation when starting a legacy stopped component.
+		if compSpec.Replicas == 0 {
+			componentKey := getComponentKeyForStartSnapshot(clusterCompName, "")
+			if replicasOfSnapshot, ok := componentReplicasMap[componentKey]; ok && replicasOfSnapshot > 0 {
+				compSpec.Replicas = replicasOfSnapshot
+				// Also restore instance replicas if available
+				for i := range compSpec.Instances {
+					instanceKey := getComponentKeyForStartSnapshot(clusterCompName, compSpec.Instances[i].Name)
+					if instanceReplicas, ok := componentReplicasMap[instanceKey]; ok && instanceReplicas > 0 {
+						compSpec.Instances[i].Replicas = &instanceReplicas
+					}
+				}
+			} else {
+				// Default to 1 if no snapshot available
+				compSpec.Replicas = 1
+			}
+		}
 	}
 	for i, v := range cluster.Spec.ComponentSpecs {
 		startComp(&cluster.Spec.ComponentSpecs[i], v.Name)
@@ -84,6 +110,8 @@ func (start StartOpsHandler) Action(reqCtx intctrlutil.RequestCtx, cli client.Cl
 	for i, v := range cluster.Spec.ShardingSpecs {
 		startComp(&cluster.Spec.ShardingSpecs[i].Template, v.Name)
 	}
+	// Delete the replicas snapshot annotation after restoring
+	delete(cluster.Annotations, constant.SnapShotForStartAnnotationKey)
 	return cli.Update(reqCtx.Ctx, cluster)
 }
 
@@ -110,4 +138,24 @@ func (start StartOpsHandler) ReconcileAction(reqCtx intctrlutil.RequestCtx, cli 
 // SaveLastConfiguration records last configuration to the OpsRequest.status.lastConfiguration
 func (start StartOpsHandler) SaveLastConfiguration(reqCtx intctrlutil.RequestCtx, cli client.Client, opsRes *OpsResource) error {
 	return nil
+}
+
+// getComponentReplicasSnapshot gets the replicas snapshot of components from annotations.
+func getComponentReplicasSnapshot(annotations map[string]string) (map[string]int32, error) {
+	componentReplicasMap := map[string]int32{}
+	snapshotForStart := annotations[constant.SnapShotForStartAnnotationKey]
+	if len(snapshotForStart) != 0 {
+		if err := json.Unmarshal([]byte(snapshotForStart), &componentReplicasMap); err != nil {
+			return componentReplicasMap, err
+		}
+	}
+	return componentReplicasMap, nil
+}
+
+// getComponentKeyForStartSnapshot generates the key for component replicas snapshot.
+func getComponentKeyForStartSnapshot(compName, templateName string) string {
+	if templateName != "" {
+		return fmt.Sprintf("%s.%s", compName, templateName)
+	}
+	return compName
 }
