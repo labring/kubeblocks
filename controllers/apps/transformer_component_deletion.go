@@ -28,6 +28,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
@@ -156,6 +158,21 @@ func (t *componentDeletionTransformer) getCluster(transCtx *componentTransformCo
 	cluster := &appsv1alpha1.Cluster{}
 	err = transCtx.Client.Get(transCtx.Context, types.NamespacedName{Name: clusterName, Namespace: comp.Namespace}, cluster)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Cluster has been deleted, return a placeholder cluster with default TerminationPolicy
+			// to allow the component deletion to proceed
+			transCtx.Logger.Info("cluster not found, using default termination policy for component deletion",
+				"cluster", clusterName, "component", comp.Name)
+			return &appsv1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: comp.Namespace,
+				},
+				Spec: appsv1alpha1.ClusterSpec{
+					TerminationPolicy: appsv1alpha1.Delete,
+				},
+			}, nil
+		}
 		return nil, errors.New(fmt.Sprintf("failed to get cluster %s: %v", clusterName, err))
 	}
 	return cluster, nil
