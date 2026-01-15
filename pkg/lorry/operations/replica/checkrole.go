@@ -58,6 +58,7 @@ type CheckRole struct {
 	Timeout                    time.Duration
 	DBRoles                    map[string]AccessMode
 	Command                    []string
+	probeCount                 int64 // Count of role probes for periodic force sync
 }
 
 var checkrole operations.Operation = &CheckRole{}
@@ -134,6 +135,17 @@ func (s *CheckRole) Do(ctx context.Context, _ *operations.OpsRequest) (*operatio
 
 	if !manager.IsDBStartupReady() {
 		resp.Data["message"] = "db not ready"
+		// If we had a previous role, send an event to clear the role label
+		// This prevents stale labels from directing traffic to wrong pods during failover
+		if s.OriRole != "" && s.OriRole != "waitForStart" {
+			s.logger.Info("db not ready, clearing previous role", "previousRole", s.OriRole)
+			resp.Data["event"] = util.OperationSuccess
+			resp.Data["role"] = "" // Empty role will clear the label
+			err := util.SentEventForProbe(ctx, resp.Data)
+			if err == nil {
+				s.OriRole = "" // Only clear OriRole after successful event send
+			}
+		}
 		return resp, nil
 	}
 
@@ -162,8 +174,19 @@ func (s *CheckRole) Do(ctx context.Context, _ *operations.OpsRequest) (*operatio
 		return resp, nil
 	}
 
-	if s.OriRole == role {
+	// Increment probe count for periodic force sync
+	s.probeCount++
+
+	// Force sync every 60 probes (about 1 minute with 1s probe interval) to ensure
+	// Pod Label stays in sync with actual DB role, even if someone manually changed the label
+	forceSync := s.probeCount%60 == 0
+
+	if s.OriRole == role && !forceSync {
 		return nil, nil
+	}
+
+	if forceSync && s.OriRole == role {
+		s.logger.Info("periodic force sync triggered", "role", role, "probeCount", s.probeCount)
 	}
 
 	// When network partition occurs, the new primary needs to send global role change information to the controller.
@@ -185,9 +208,15 @@ func (s *CheckRole) Do(ctx context.Context, _ *operations.OpsRequest) (*operatio
 	}
 
 	resp.Data["event"] = util.OperationSuccess
-	s.OriRole = role
 	err = util.SentEventForProbe(ctx, resp.Data)
-	return resp, err
+	if err != nil {
+		// Don't update OriRole if event sending failed, so we retry on next probe
+		s.logger.Info("failed to send role change event, will retry", "error", err.Error())
+		return resp, err
+	}
+	// Only update OriRole after successful event delivery
+	s.OriRole = role
+	return resp, nil
 }
 
 // Component may have some internal roles that needn't be exposed to end user,
