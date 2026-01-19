@@ -209,6 +209,9 @@ func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
 	// role not defined in CR, ignore it
 	roleName = strings.ToLower(roleName)
 
+	oldRoleLabel := pod.Labels[RoleLabelKey]
+	reqCtx.Log.Info("updating pod role label", "pod", pod.Name, "oldRole", oldRoleLabel, "newRole", roleName, "version", version)
+
 	// update pod role label
 	newPod := pod.DeepCopy()
 	role, ok := roleMap[roleName]
@@ -216,16 +219,32 @@ func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
 	case true:
 		newPod.Labels[RoleLabelKey] = role.Name
 		newPod.Labels[AccessModeLabelKey] = string(role.AccessMode)
+		reqCtx.Log.Info("role found in roleMap", "pod", pod.Name, "roleName", roleName, "role.Name", role.Name)
 	case false:
 		delete(newPod.Labels, RoleLabelKey)
 		delete(newPod.Labels, AccessModeLabelKey)
+		reqCtx.Log.Info("role not found in roleMap, deleting label", "pod", pod.Name, "roleName", roleName, "availableRoles", getRoleMapKeys(roleMap))
 	}
 
 	if newPod.Annotations == nil {
 		newPod.Annotations = map[string]string{}
 	}
 	newPod.Annotations[constant.LastRoleSnapshotVersionAnnotationKey] = version
-	return cli.Update(ctx, newPod, inDataContext())
+
+	if err := cli.Update(ctx, newPod, inDataContext()); err != nil {
+		reqCtx.Log.Error(err, "failed to update pod role label", "pod", pod.Name, "newRole", roleName)
+		return err
+	}
+	reqCtx.Log.Info("successfully updated pod role label", "pod", pod.Name, "newRole", newPod.Labels[RoleLabelKey])
+	return nil
+}
+
+func getRoleMapKeys(roleMap map[string]workloads.ReplicaRole) []string {
+	keys := make([]string, 0, len(roleMap))
+	for k := range roleMap {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func inDataContext() *multicluster.ClientOption {
