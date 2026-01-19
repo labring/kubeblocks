@@ -685,11 +685,28 @@ func copyAndMerge(oldObj, newObj client.Object) client.Object {
 	copyAndMergePVC := func(oldPVC, newPVC *corev1.PersistentVolumeClaim) client.Object {
 		mergeMap(&newPVC.Annotations, &oldPVC.Annotations)
 		mergeMap(&newPVC.Labels, &oldPVC.Labels)
+
+		// Check if PVC has Component as owner (leftover from upgrade) and clear it
+		// This ensures PVCs are properly migrated after KubeBlocks upgrade
+		needUpdate := false
+		for _, ref := range oldPVC.GetOwnerReferences() {
+			if ref.Kind == "Component" && strings.HasPrefix(ref.APIVersion, "apps.kubeblocks.io/") {
+				fmt.Printf("[PVC-FIX] Clearing Component ownerReference from PVC %s/%s, Component=%s\n",
+					oldPVC.Namespace, oldPVC.Name, ref.Name)
+				oldPVC.SetOwnerReferences(nil)
+				needUpdate = true
+				break
+			}
+		}
+
 		// resources.request.storage and accessModes support in-place update.
 		// resources.request.storage only supports volume expansion.
 		if reflect.DeepEqual(oldPVC.Spec.AccessModes, newPVC.Spec.AccessModes) &&
 			oldPVC.Spec.Resources.Requests.Storage().Cmp(*newPVC.Spec.Resources.Requests.Storage()) >= 0 {
-			return oldPVC
+			if needUpdate {
+				return oldPVC
+			}
+			return nil // Return nil to indicate no update needed, maintaining original behavior
 		}
 		oldPVC.Spec.AccessModes = newPVC.Spec.AccessModes
 		if newPVC.Spec.Resources.Requests == nil {

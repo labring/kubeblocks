@@ -71,7 +71,26 @@ func ReadObjectTree[T client.Object](ctx context.Context, reader client.Reader, 
 		for i := 0; i < l; i++ {
 			// get the underlying object
 			object := items.Index(i).Addr().Interface().(client.Object)
-			if len(object.GetOwnerReferences()) > 0 && !model.IsOwnerOf(root, object) {
+			// For PVCs owned by Component (after KubeBlocks upgrade), we should include them
+			// and clear the ownerReference since PVCs should not have Component as owner.
+			// This fixes the upgrade leftover issue where some PVCs still have ownerReference
+			// pointing to Component, causing TreeLoader to skip them.
+			shouldInclude := model.IsOwnerOf(root, object)
+			if !shouldInclude {
+				if pvc, isPVC := object.(*corev1.PersistentVolumeClaim); isPVC {
+					// Check if PVC is owned by Component - include it but DON'T clear ownerReference here
+					// The clearing will happen in copyAndMergePVC during reconciliation
+					for _, ref := range pvc.GetOwnerReferences() {
+						if ref.Kind == "Component" && strings.HasPrefix(ref.APIVersion, "apps.kubeblocks.io/") {
+							fmt.Printf("[PVC-FIX-LOADER] Found PVC %s/%s with Component owner %s, including in tree\n",
+								pvc.Namespace, pvc.Name, ref.Name)
+							shouldInclude = true
+							break
+						}
+					}
+				}
+			}
+			if len(object.GetOwnerReferences()) > 0 && !shouldInclude {
 				continue
 			}
 			if err := tree.Add(object); err != nil {
