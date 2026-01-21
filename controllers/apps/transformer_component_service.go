@@ -90,10 +90,40 @@ func (t *componentServiceTransformer) Transform(ctx graph.TransformContext, dag 
 	}
 
 	for svc := range runningServices {
+		// Keep legacy services for backward compatibility (0.8 -> 0.9 upgrade).
+		// If a service name matches the legacy format ({cluster}-{component}) and it's not defined
+		// in current ComponentServices, keep it instead of deleting.
+		if t.isLegacyService(synthesizeComp, svc) {
+			continue
+		}
 		graphCli.Delete(dag, runningServices[svc], inDataContext4G())
 	}
 
 	return nil
+}
+
+// isLegacyService checks if a service is a legacy service that should be kept for backward compatibility.
+// Legacy services have the format {cluster}-{component} and were created in older versions (0.8).
+// In newer versions (0.9+), services may have additional suffix like {cluster}-{component}-{serviceName}.
+func (t *componentServiceTransformer) isLegacyService(synthesizeComp *component.SynthesizedComponent, svcName string) bool {
+	// Generate the legacy default service name: {cluster}-{component}
+	legacyDefaultSvcName := constant.GenerateDefaultComponentServiceName(synthesizeComp.ClusterName, synthesizeComp.Name)
+	if svcName != legacyDefaultSvcName {
+		return false
+	}
+
+	// Check if any current service would generate the same name as legacy service.
+	// If so, it's not a legacy service that needs to be kept.
+	for _, service := range synthesizeComp.ComponentServices {
+		currentSvcName := constant.GenerateComponentServiceName(synthesizeComp.ClusterName, synthesizeComp.Name, service.ServiceName)
+		if currentSvcName == legacyDefaultSvcName {
+			// Current service definition generates the same name, not a legacy service
+			return false
+		}
+	}
+
+	// This is a legacy service: name matches {cluster}-{component} but no current service generates this name
+	return true
 }
 
 func (t *componentServiceTransformer) listOwnedServices(ctx context.Context, cli client.Reader,

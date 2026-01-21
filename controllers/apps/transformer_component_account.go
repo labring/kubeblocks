@@ -140,10 +140,32 @@ func (t *componentAccountTransformer) buildPassword(ctx *componentTransformConte
 		// This is compatibility processing.
 		password = factory.GetRestorePassword(ctx.Cluster, ctx.SynthesizeComponent)
 	}
+	// Try to get password from legacy conn-credential secret for backward compatibility (0.8 -> 0.9 upgrade).
+	if account.InitAccount && password == "" {
+		password = t.getPasswordFromLegacySecret(ctx)
+	}
 	if password == "" {
 		return t.generatePassword(account)
 	}
 	return []byte(password)
+}
+
+// getPasswordFromLegacySecret attempts to get password from legacy conn-credential secret.
+// This is for backward compatibility when upgrading from 0.8 to 0.9.
+func (t *componentAccountTransformer) getPasswordFromLegacySecret(ctx *componentTransformContext) string {
+	legacySecretName := constant.GenerateDefaultConnCredential(ctx.SynthesizeComponent.ClusterName)
+	secretKey := types.NamespacedName{
+		Namespace: ctx.SynthesizeComponent.Namespace,
+		Name:      legacySecretName,
+	}
+	secret := &corev1.Secret{}
+	if err := ctx.GetClient().Get(ctx.GetContext(), secretKey, secret); err != nil {
+		return ""
+	}
+	if password, ok := secret.Data[constant.AccountPasswdForSecret]; ok && len(password) > 0 {
+		return string(password)
+	}
+	return ""
 }
 
 func (t *componentAccountTransformer) generatePassword(account appsv1alpha1.SystemAccount) []byte {
