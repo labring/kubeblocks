@@ -685,6 +685,14 @@ func copyAndMerge(oldObj, newObj client.Object) client.Object {
 	copyAndMergePVC := func(oldPVC, newPVC *corev1.PersistentVolumeClaim) client.Object {
 		mergeMap(&newPVC.Annotations, &oldPVC.Annotations)
 		mergeMap(&newPVC.Labels, &oldPVC.Labels)
+
+		// Clear any ownerReference from PVC to prevent owner mismatch issues
+		if len(oldPVC.GetOwnerReferences()) > 0 {
+			fmt.Printf("[PVC-FIX] Clearing ownerReference from PVC %s/%s\n",
+				oldPVC.Namespace, oldPVC.Name)
+			oldPVC.SetOwnerReferences(nil)
+		}
+
 		// resources.request.storage and accessModes support in-place update.
 		// resources.request.storage only supports volume expansion.
 		if reflect.DeepEqual(oldPVC.Spec.AccessModes, newPVC.Spec.AccessModes) &&
