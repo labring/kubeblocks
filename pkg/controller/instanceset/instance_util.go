@@ -697,7 +697,7 @@ func copyAndMerge(oldObj, newObj client.Object) client.Object {
 		// resources.request.storage only supports volume expansion.
 		if reflect.DeepEqual(oldPVC.Spec.AccessModes, newPVC.Spec.AccessModes) &&
 			oldPVC.Spec.Resources.Requests.Storage().Cmp(*newPVC.Spec.Resources.Requests.Storage()) >= 0 {
-			return nil // Return nil to indicate no update needed, maintaining original behavior
+			return oldPVC
 		}
 		oldPVC.Spec.AccessModes = newPVC.Spec.AccessModes
 		if newPVC.Spec.Resources.Requests == nil {
