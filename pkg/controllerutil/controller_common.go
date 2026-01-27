@@ -243,6 +243,57 @@ func BackgroundDeleteObject(cli client.Client, ctx context.Context, obj client.O
 	return nil
 }
 
+// ForceDeleteStuckTerminatingPod force deletes a pod that has been in terminating state for too long.
+// timeout: duration after which a terminating pod should be force deleted (e.g., 60 seconds)
+// Returns true if the pod was force deleted, false otherwise.
+func ForceDeleteStuckTerminatingPod(cli client.Client, ctx context.Context, pod *corev1.Pod, timeout time.Duration) (bool, error) {
+	if pod == nil || pod.DeletionTimestamp == nil || pod.DeletionTimestamp.IsZero() {
+		return false, nil
+	}
+
+	// Calculate how long the pod has been terminating
+	terminatingDuration := time.Since(pod.DeletionTimestamp.Time)
+	if terminatingDuration < timeout {
+		return false, nil // Not stuck yet
+	}
+
+	// Force delete the pod with GracePeriodSeconds=0
+	gracePeriod := int64(0)
+	deleteOptions := &client.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+	}
+
+	if err := cli.Delete(ctx, pod, deleteOptions); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil // Already deleted
+		}
+		return false, err
+	}
+
+	ctrl.Log.Info("Force deleted stuck terminating pod",
+		"namespace", pod.Namespace, "name", pod.Name,
+		"terminatingDuration", terminatingDuration.Round(time.Second).String())
+
+	return true, nil
+}
+
+// ForceDeleteStuckTerminatingPods force deletes all pods in a list that have been terminating for too long.
+// Returns the number of pods that were force deleted.
+func ForceDeleteStuckTerminatingPods(cli client.Client, ctx context.Context, pods []corev1.Pod, timeout time.Duration) (int, error) {
+	deletedCount := 0
+	for i := range pods {
+		pod := &pods[i]
+		deleted, err := ForceDeleteStuckTerminatingPod(cli, ctx, pod, timeout)
+		if err != nil {
+			return deletedCount, err
+		}
+		if deleted {
+			deletedCount++
+		}
+	}
+	return deletedCount, nil
+}
+
 // SetOwnership provides helper function controllerutil.SetControllerReference/controllerutil.SetOwnerReference
 // and controllerutil.AddFinalizer if not exists.
 func SetOwnership(owner, obj client.Object, scheme *runtime.Scheme, finalizer string, useOwnerReference ...bool) error {

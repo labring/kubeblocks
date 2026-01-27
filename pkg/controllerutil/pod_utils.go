@@ -614,3 +614,17 @@ func isContainerFailedAndTimedOut(pod *corev1.Pod, podConditionType corev1.PodCo
 	}
 	return time.Now().After(containerReadyCondition.LastTransitionTime.Add(PodContainerFailedTimeout))
 }
+
+// IsPodTerminating checks if a pod is in terminating state (has DeletionTimestamp set)
+func IsPodTerminating(pod *corev1.Pod) bool {
+	return pod != nil && pod.DeletionTimestamp != nil && !pod.DeletionTimestamp.IsZero()
+}
+
+// GetPodTerminatingDuration returns how long a pod has been in terminating state
+func GetPodTerminatingDuration(pod *corev1.Pod) time.Duration {
+	if !IsPodTerminating(pod) {
+		return 0
+	}
+	return time.Since(pod.DeletionTimestamp.Time)
+}
+

@@ -84,11 +84,19 @@ type GraphWriter interface {
 type GraphClient interface {
 	client.Reader
 	GraphWriter
+	// GetUnderlyingClient returns the underlying client.Client for operations that need write access.
+	// This is useful when performing operations like force delete that aren't part of the DAG.
+	GetUnderlyingClient() client.Client
 }
 
 // TODO(free6om): make DAG a member of realGraphClient
 type realGraphClient struct {
 	client.Client
+}
+
+// GetUnderlyingClient returns the underlying client.Client
+func (r *realGraphClient) GetUnderlyingClient() client.Client {
+	return r.Client
 }
 
 func (r *realGraphClient) Root(dag *graph.DAG, objOld, objNew client.Object, action *Action) {
