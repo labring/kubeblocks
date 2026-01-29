@@ -55,12 +55,6 @@ func (t *clusterDeletionTransformer) Transform(ctx graph.TransformContext, dag *
 	if !cluster.IsDeleting() {
 		return nil
 	}
-	// If the cluster finalizer has already been removed, the deletion has succeeded.
-	// Skip creating new deletion vertices to avoid a race condition with the garbage collector
-	// during foreground cascading deletion, which would cause an infinite loop.
-	if !controllerutil.ContainsFinalizer(cluster, constant.DBClusterFinalizerName) {
-		return nil
-	}
 
 	graphCli, _ := transCtx.Client.(model.GraphClient)
 
@@ -173,7 +167,6 @@ func (t *clusterDeletionTransformer) Transform(ctx graph.TransformContext, dag *
 			graphCli.Delete(dag, o)
 		}
 	}
-
 	// set cluster action to noop until all the sub-resources deleted
 	if len(delObjs) == 0 {
 		graphCli.Delete(dag, cluster)
@@ -242,8 +235,3 @@ func kindsForWipeOut() ([]client.ObjectList, []client.ObjectList) {
 	}
 	return append(namespacedKinds, namespacedKindsPlus...), nonNamespacedKinds
 }
-
-// forceDeleteStuckTerminatingPods lists all pods owned by the cluster and force deletes those
-// that have been in terminating state for longer than stuckPodTerminatingTimeout.
-// This is necessary because pods stuck in terminating state prevent PVC deletion due to
-// the kubernetes.io/pvc-protection finalizer.
