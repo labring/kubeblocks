@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2022-2023 ApeCloud Co., Ltd
+Copyright (C) 2022-2024 ApeCloud Co., Ltd
 
 This file is part of KubeBlocks project
 
@@ -20,8 +20,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package controllerutil
 
 import (
+	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,35 +34,13 @@ import (
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 const (
 	// PodContainerFailedTimeout the timeout for container of pod failures, the component phase will be set to Failed/Abnormal after this time.
 	PodContainerFailedTimeout = 10 * time.Second
-
-	// PodScheduledFailedTimeout timeout for scheduling failure.
-	PodScheduledFailedTimeout = 30 * time.Second
 )
-
-// statefulPodRegex is a regular expression that extracts the parent StatefulSet and ordinal from the Name of a Pod
-var statefulPodRegex = regexp.MustCompile("(.*)-([0-9]+)$")
-
-// GetParentNameAndOrdinal gets the name of pod's parent StatefulSet and pod's ordinal as extracted from its Name. If
-// the Pod was not created by a StatefulSet, its parent is considered to be empty string, and its ordinal is considered
-// to be -1.
-func GetParentNameAndOrdinal(pod *corev1.Pod) (string, int) {
-	parent := ""
-	ordinal := -1
-	subMatches := statefulPodRegex.FindStringSubmatch(pod.Name)
-	if len(subMatches) < 3 {
-		return parent, ordinal
-	}
-	parent = subMatches[1]
-	if i, err := strconv.ParseInt(subMatches[2], 10, 32); err == nil {
-		ordinal = int(i)
-	}
-	return parent, ordinal
-}
 
 // GetContainerByConfigSpec searches for container using the configmap of config from the pod
 //
@@ -403,11 +381,6 @@ func PodIsReadyWithLabel(pod corev1.Pod) bool {
 	return PodIsReady(&pod)
 }
 
-// PodIsControlledByLatestRevision checks if the pod is controlled by latest controller revision.
-func PodIsControlledByLatestRevision(pod *corev1.Pod, sts *appsv1.StatefulSet) bool {
-	return GetPodRevision(pod) == sts.Status.UpdateRevision && sts.Status.ObservedGeneration == sts.Generation
-}
-
 // GetPodRevision gets the revision of Pod by inspecting the StatefulSetRevisionLabel. If pod has no revision empty
 // string is returned.
 func GetPodRevision(pod *corev1.Pod) string {
@@ -561,11 +534,22 @@ func ResolveContainerDefaultFields(container corev1.Container, pcontainer *corev
 	}
 }
 
+// GetPodContainer gets the pod container by name. if containerName is empty, return the first container.
+func GetPodContainer(pod *corev1.Pod, containerName string) *corev1.Container {
+	if containerName == "" {
+		return &pod.Spec.Containers[0]
+	}
+	for i := range pod.Spec.Containers {
+		container := pod.Spec.Containers[i]
+		if container.Name == containerName {
+			return &container
+		}
+	}
+	return nil
+}
+
 // IsPodFailedAndTimedOut checks if the pod is failed and timed out.
 func IsPodFailedAndTimedOut(pod *corev1.Pod) (bool, bool, string) {
-	if isFailed, isTimedOut, message := isPodScheduledFailedAndTimedOut(pod); isFailed {
-		return isFailed, isTimedOut, message
-	}
 	initContainerFailed, message := isAnyContainerFailed(pod.Status.InitContainerStatuses)
 	if initContainerFailed {
 		return initContainerFailed, isContainerFailedAndTimedOut(pod, corev1.PodInitialized), message
@@ -573,20 +557,6 @@ func IsPodFailedAndTimedOut(pod *corev1.Pod) (bool, bool, string) {
 	containerFailed, message := isAnyContainerFailed(pod.Status.ContainerStatuses)
 	if containerFailed {
 		return containerFailed, isContainerFailedAndTimedOut(pod, corev1.ContainersReady), message
-	}
-	return false, false, ""
-}
-
-// IsPodScheduledFailedAndTimedOut checks whether the unscheduled pod has timed out.
-func isPodScheduledFailedAndTimedOut(pod *corev1.Pod) (bool, bool, string) {
-	for _, cond := range pod.Status.Conditions {
-		if cond.Type != corev1.PodScheduled {
-			continue
-		}
-		if cond.Status == corev1.ConditionTrue {
-			return false, false, ""
-		}
-		return true, time.Now().After(cond.LastTransitionTime.Add(PodScheduledFailedTimeout)), cond.Message
 	}
 	return false, false, ""
 }
@@ -615,16 +585,15 @@ func isContainerFailedAndTimedOut(pod *corev1.Pod, podConditionType corev1.PodCo
 	return time.Now().After(containerReadyCondition.LastTransitionTime.Add(PodContainerFailedTimeout))
 }
 
-// IsPodTerminating checks if a pod is in terminating state (has DeletionTimestamp set)
-func IsPodTerminating(pod *corev1.Pod) bool {
-	return pod != nil && pod.DeletionTimestamp != nil && !pod.DeletionTimestamp.IsZero()
-}
-
-// GetPodTerminatingDuration returns how long a pod has been in terminating state
-func GetPodTerminatingDuration(pod *corev1.Pod) time.Duration {
-	if !IsPodTerminating(pod) {
-		return 0
+func BuildImagePullSecrets() []corev1.LocalObjectReference {
+	secrets := make([]corev1.LocalObjectReference, 0)
+	secretsVal := viper.GetString(constant.KBImagePullSecrets)
+	if secretsVal == "" {
+		return secrets
 	}
-	return time.Since(pod.DeletionTimestamp.Time)
-}
 
+	// we already validate the value of KBImagePullSecrets when start server,
+	// so we can ignore the error here
+	_ = json.Unmarshal([]byte(secretsVal), &secrets)
+	return secrets
+}

@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2022-2023 ApeCloud Co., Ltd
+Copyright (C) 2022-2024 ApeCloud Co., Ltd
 
 This file is part of KubeBlocks project
 
@@ -231,67 +231,16 @@ func IgnoreIsAlreadyExists(err error) error {
 }
 
 // BackgroundDeleteObject deletes the object in the background, usually used in the Reconcile method
-func BackgroundDeleteObject(cli client.Client, ctx context.Context, obj client.Object) error {
+func BackgroundDeleteObject(cli client.Client, ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
 	deletePropagation := metav1.DeletePropagationBackground
 	deleteOptions := &client.DeleteOptions{
 		PropagationPolicy: &deletePropagation,
 	}
 
-	if err := cli.Delete(ctx, obj, deleteOptions); err != nil {
+	if err := cli.Delete(ctx, obj, append([]client.DeleteOption{deleteOptions}, opts...)...); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	return nil
-}
-
-// ForceDeleteStuckTerminatingPod force deletes a pod that has been in terminating state for too long.
-// timeout: duration after which a terminating pod should be force deleted (e.g., 60 seconds)
-// Returns true if the pod was force deleted, false otherwise.
-func ForceDeleteStuckTerminatingPod(cli client.Client, ctx context.Context, pod *corev1.Pod, timeout time.Duration) (bool, error) {
-	if pod == nil || pod.DeletionTimestamp == nil || pod.DeletionTimestamp.IsZero() {
-		return false, nil
-	}
-
-	// Calculate how long the pod has been terminating
-	terminatingDuration := time.Since(pod.DeletionTimestamp.Time)
-	if terminatingDuration < timeout {
-		return false, nil // Not stuck yet
-	}
-
-	// Force delete the pod with GracePeriodSeconds=0
-	gracePeriod := int64(0)
-	deleteOptions := &client.DeleteOptions{
-		GracePeriodSeconds: &gracePeriod,
-	}
-
-	if err := cli.Delete(ctx, pod, deleteOptions); err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, nil // Already deleted
-		}
-		return false, err
-	}
-
-	ctrl.Log.Info("Force deleted stuck terminating pod",
-		"namespace", pod.Namespace, "name", pod.Name,
-		"terminatingDuration", terminatingDuration.Round(time.Second).String())
-
-	return true, nil
-}
-
-// ForceDeleteStuckTerminatingPods force deletes all pods in a list that have been terminating for too long.
-// Returns the number of pods that were force deleted.
-func ForceDeleteStuckTerminatingPods(cli client.Client, ctx context.Context, pods []corev1.Pod, timeout time.Duration) (int, error) {
-	deletedCount := 0
-	for i := range pods {
-		pod := &pods[i]
-		deleted, err := ForceDeleteStuckTerminatingPod(cli, ctx, pod, timeout)
-		if err != nil {
-			return deletedCount, err
-		}
-		if deleted {
-			deletedCount++
-		}
-	}
-	return deletedCount, nil
 }
 
 // SetOwnership provides helper function controllerutil.SetControllerReference/controllerutil.SetOwnerReference
@@ -306,11 +255,10 @@ func SetOwnership(owner, obj client.Object, scheme *runtime.Scheme, finalizer st
 			return err
 		}
 	}
-	if !controllerutil.ContainsFinalizer(obj, finalizer) {
+	if len(finalizer) > 0 && !controllerutil.ContainsFinalizer(obj, finalizer) {
 		// pvc objects do not need to add finalizer
 		_, ok := obj.(*corev1.PersistentVolumeClaim)
-		_, isPod := obj.(*corev1.Pod)
-		if !ok && !isPod {
+		if !ok {
 			if !controllerutil.AddFinalizer(obj, finalizer) {
 				return ErrFailedToAddFinalizer
 			}
@@ -322,7 +270,7 @@ func SetOwnership(owner, obj client.Object, scheme *runtime.Scheme, finalizer st
 // CheckResourceExists checks whether resource exist or not.
 func CheckResourceExists(
 	ctx context.Context,
-	cli client.Client,
+	cli client.Reader,
 	key client.ObjectKey,
 	obj client.Object) (bool, error) {
 	if err := cli.Get(ctx, key, obj); err != nil {
@@ -569,6 +517,20 @@ func (pm *PortManager) delete(keys []string) error {
 	return nil
 }
 
+func (pm *PortManager) GetPort(key string) (int32, error) {
+	pm.Lock()
+	defer pm.Unlock()
+
+	if value, ok := pm.cm.Data[key]; ok {
+		port, err := pm.parsePort(value)
+		if err != nil {
+			return 0, err
+		}
+		return port, nil
+	}
+	return 0, nil
+}
+
 func (pm *PortManager) UsePort(key string, port int32) error {
 	pm.Lock()
 	defer pm.Unlock()
@@ -644,8 +606,4 @@ func (pm *PortManager) ReleaseByPrefix(prefix string) error {
 		return err
 	}
 	return nil
-}
-
-func (pm *PortManager) NeedAllocate(port int32) bool {
-	return port <= 100
 }
