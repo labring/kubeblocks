@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2022-2024 ApeCloud Co., Ltd
+Copyright (C) 2022-2023 ApeCloud Co., Ltd
 
 This file is part of KubeBlocks project
 
@@ -231,13 +231,13 @@ func IgnoreIsAlreadyExists(err error) error {
 }
 
 // BackgroundDeleteObject deletes the object in the background, usually used in the Reconcile method
-func BackgroundDeleteObject(cli client.Client, ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+func BackgroundDeleteObject(cli client.Client, ctx context.Context, obj client.Object) error {
 	deletePropagation := metav1.DeletePropagationBackground
 	deleteOptions := &client.DeleteOptions{
 		PropagationPolicy: &deletePropagation,
 	}
 
-	if err := cli.Delete(ctx, obj, append([]client.DeleteOption{deleteOptions}, opts...)...); err != nil {
+	if err := cli.Delete(ctx, obj, deleteOptions); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	return nil
@@ -255,10 +255,11 @@ func SetOwnership(owner, obj client.Object, scheme *runtime.Scheme, finalizer st
 			return err
 		}
 	}
-	if len(finalizer) > 0 && !controllerutil.ContainsFinalizer(obj, finalizer) {
+	if !controllerutil.ContainsFinalizer(obj, finalizer) {
 		// pvc objects do not need to add finalizer
 		_, ok := obj.(*corev1.PersistentVolumeClaim)
-		if !ok {
+		_, isPod := obj.(*corev1.Pod)
+		if !ok && !isPod {
 			if !controllerutil.AddFinalizer(obj, finalizer) {
 				return ErrFailedToAddFinalizer
 			}
@@ -270,7 +271,7 @@ func SetOwnership(owner, obj client.Object, scheme *runtime.Scheme, finalizer st
 // CheckResourceExists checks whether resource exist or not.
 func CheckResourceExists(
 	ctx context.Context,
-	cli client.Reader,
+	cli client.Client,
 	key client.ObjectKey,
 	obj client.Object) (bool, error) {
 	if err := cli.Get(ctx, key, obj); err != nil {
@@ -517,20 +518,6 @@ func (pm *PortManager) delete(keys []string) error {
 	return nil
 }
 
-func (pm *PortManager) GetPort(key string) (int32, error) {
-	pm.Lock()
-	defer pm.Unlock()
-
-	if value, ok := pm.cm.Data[key]; ok {
-		port, err := pm.parsePort(value)
-		if err != nil {
-			return 0, err
-		}
-		return port, nil
-	}
-	return 0, nil
-}
-
 func (pm *PortManager) UsePort(key string, port int32) error {
 	pm.Lock()
 	defer pm.Unlock()
@@ -606,4 +593,8 @@ func (pm *PortManager) ReleaseByPrefix(prefix string) error {
 		return err
 	}
 	return nil
+}
+
+func (pm *PortManager) NeedAllocate(port int32) bool {
+	return port <= 100
 }
