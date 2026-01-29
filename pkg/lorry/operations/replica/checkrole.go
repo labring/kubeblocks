@@ -49,6 +49,7 @@ type CheckRole struct {
 	OriRole                    string
 	CheckRoleFailedCount       int
 	FailedEventReportFrequency int
+	probeCount                 int64
 	ProbeTimeout               time.Duration
 	DBRoles                    map[string]AccessMode
 	Command                    []string
@@ -128,6 +129,18 @@ func (s *CheckRole) Do(ctx context.Context, req *operations.OpsRequest) (*operat
 
 	if !manager.IsDBStartupReady() {
 		resp.Data["message"] = "db not ready"
+		// if the db is not ready, we should clean the role label and info
+		if s.OriRole != "" && s.OriRole != "waitForStart" {
+			s.logger.Info("db is not ready, but role is set, clear role label", "role", s.OriRole)
+			resp.Data["event"] = util.OperationSuccess
+			resp.Data["role"] = ""
+			err = util.SentEventForProbe(ctx, resp.Data)
+			if err != nil {
+				s.logger.Error(err, "send role event failed, will retry later")
+				return resp, err
+			}
+			s.OriRole = ""
+		}
 		return resp, nil
 	}
 
@@ -158,12 +171,21 @@ func (s *CheckRole) Do(ctx context.Context, req *operations.OpsRequest) (*operat
 
 	resp.Data["role"] = role
 	if s.OriRole == role {
-		return nil, nil
+		s.probeCount++
+		forceSync := s.probeCount%60 == 0
+		if !forceSync {
+			return nil, nil
+		}
+		s.logger.Info("role is not changed, but force sync role label", "role", role, "count", s.probeCount)
 	}
 	resp.Data["event"] = util.OperationSuccess
-	s.OriRole = role
 	err = util.SentEventForProbe(ctx, resp.Data)
-	return resp, err
+	if err != nil {
+		s.logger.Error(err, "send role event failed, will retry later")
+		return resp, err
+	}
+	s.OriRole = role
+	return resp, nil
 }
 
 // Component may have some internal roles that needn't be exposed to end user,
