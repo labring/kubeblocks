@@ -141,15 +141,22 @@ func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
 	roleMap := composeRoleMap(rsm)
 	// role not defined in CR, ignore it
 	roleName = strings.ToLower(roleName)
+	oldRoleLabel := ""
+	if pod.Labels != nil {
+		oldRoleLabel = pod.Labels[roleLabelKey]
+	}
+	reqCtx.Log.Info("updating pod role label", "pod", pod.Name, "oldRole", oldRoleLabel, "newRole", roleName, "version", version)
 
 	// update pod role label
 	patch := client.MergeFrom(pod.DeepCopy())
 	role, ok := roleMap[roleName]
 	switch ok {
 	case true:
+		reqCtx.Log.Info("role found in roleMap", "pod", pod.Name, "roleName", roleName, "role.Name", role.Name)
 		pod.Labels[roleLabelKey] = role.Name
 		pod.Labels[rsmAccessModeLabelKey] = string(role.AccessMode)
 	case false:
+		reqCtx.Log.Info("role not found in roleMap, deleting label", "pod", pod.Name, "roleName", roleName, "availableRoles", getRoleMapKeys(roleMap))
 		delete(pod.Labels, roleLabelKey)
 		delete(pod.Labels, rsmAccessModeLabelKey)
 	}
@@ -158,7 +165,12 @@ func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
 		pod.Annotations = map[string]string{}
 	}
 	pod.Annotations[constant.LastRoleSnapshotVersionAnnotationKey] = version
-	return cli.Patch(ctx, pod, patch)
+	if err := cli.Patch(ctx, pod, patch); err != nil {
+		reqCtx.Log.Error(err, "failed to update pod role label", "pod", pod.Name, "newRole", roleName)
+		return err
+	}
+	reqCtx.Log.Info("successfully updated pod role label", "pod", pod.Name, "newRole", pod.Labels[roleLabelKey])
+	return nil
 }
 
 func composeRoleMap(rsm workloads.ReplicatedStateMachine) map[string]workloads.ReplicaRole {
@@ -167,6 +179,14 @@ func composeRoleMap(rsm workloads.ReplicatedStateMachine) map[string]workloads.R
 		roleMap[strings.ToLower(role.Name)] = role
 	}
 	return roleMap
+}
+
+func getRoleMapKeys(roleMap map[string]workloads.ReplicaRole) []string {
+	keys := make([]string, 0, len(roleMap))
+	for k := range roleMap {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func setMembersStatus(rsm *workloads.ReplicatedStateMachine, pods []corev1.Pod) {

@@ -49,10 +49,6 @@ type clusterDeletionTransformer struct{}
 
 var _ graph.Transformer = &clusterDeletionTransformer{}
 
-// stuckPodTerminatingTimeout is the duration after which a terminating pod is considered stuck
-// and will be force deleted. This is necessary because stuck pods prevent PVC deletion.
-const stuckPodTerminatingTimeout = 60 * time.Second
-
 func (t *clusterDeletionTransformer) Transform(ctx graph.TransformContext, dag *graph.DAG) error {
 	transCtx, _ := ctx.(*clusterTransformContext)
 	cluster := transCtx.OrigCluster
@@ -178,17 +174,6 @@ func (t *clusterDeletionTransformer) Transform(ctx graph.TransformContext, dag *
 		}
 	}
 
-	// Force delete pods that have been stuck in terminating state for too long.
-	// This is necessary because stuck pods prevent PVC deletion due to pvc-protection finalizer.
-	forceDeletedCount, err := t.forceDeleteStuckTerminatingPods(transCtx, *cluster, ml)
-	if err != nil {
-		return err
-	}
-	if forceDeletedCount > 0 {
-		transCtx.EventRecorder.Eventf(cluster, corev1.EventTypeWarning, "ForceDeletePods",
-			"Force deleted %d stuck terminating pods", forceDeletedCount)
-	}
-
 	// set cluster action to noop until all the sub-resources deleted
 	if len(delObjs) == 0 {
 		graphCli.Delete(dag, cluster)
@@ -262,22 +247,3 @@ func kindsForWipeOut() ([]client.ObjectList, []client.ObjectList) {
 // that have been in terminating state for longer than stuckPodTerminatingTimeout.
 // This is necessary because pods stuck in terminating state prevent PVC deletion due to
 // the kubernetes.io/pvc-protection finalizer.
-func (t *clusterDeletionTransformer) forceDeleteStuckTerminatingPods(
-	transCtx *clusterTransformContext,
-	cluster appsv1alpha1.Cluster,
-	ml client.MatchingLabels,
-) (int, error) {
-	podList := &corev1.PodList{}
-	if err := transCtx.Client.List(transCtx.Context, podList, client.InNamespace(cluster.Namespace), ml); err != nil {
-		return 0, err
-	}
-
-	// Get the underlying client from the graph client for write operations
-	graphCli, ok := transCtx.Client.(model.GraphClient)
-	if !ok {
-		return 0, fmt.Errorf("failed to get graph client")
-	}
-	cli := graphCli.GetUnderlyingClient()
-
-	return intctrlutil.ForceDeleteStuckTerminatingPods(cli, transCtx.Context, podList.Items, stuckPodTerminatingTimeout)
-}
