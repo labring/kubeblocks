@@ -58,6 +58,10 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 	synthesizeComp := transCtx.SynthesizeComponent
 	graphCli, _ := transCtx.Client.(model.GraphClient)
 
+	if err := t.ensureLegacyMongoRootSecret(transCtx, synthesizeComp, graphCli, dag); err != nil {
+		return err
+	}
+
 	for _, account := range synthesizeComp.SystemAccounts {
 		existSecret, err := t.checkAccountSecretExist(ctx, synthesizeComp, account)
 		if err != nil {
@@ -66,6 +70,12 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 		secret, err := t.buildAccountSecret(transCtx, synthesizeComp, account)
 		if err != nil {
 			return err
+		}
+		if secret == nil {
+			if existSecret == nil {
+				t.emitMissingInitAccountSecretEvent(transCtx, synthesizeComp, account)
+			}
+			continue
 		}
 
 		if existSecret == nil {
@@ -81,6 +91,56 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 			graphCli.Update(dag, existSecret, existSecretCopy, inUniversalContext4G())
 		}
 	}
+	return nil
+}
+
+func (t *componentAccountTransformer) ensureLegacyMongoRootSecret(
+	transCtx *componentTransformContext,
+	synthesizeComp *component.SynthesizedComponent,
+	graphCli model.GraphClient,
+	dag *graph.DAG,
+) error {
+	if transCtx == nil || synthesizeComp == nil || graphCli == nil {
+		return nil
+	}
+	compObj := transCtx.ComponentOrig
+	if compObj == nil {
+		compObj = transCtx.Component
+	}
+	if compObj == nil || !component.IsGenerated(compObj) {
+		return nil
+	}
+	if !t.isMongoComponent(transCtx) {
+		return nil
+	}
+	if hasAccountName(synthesizeComp.SystemAccounts, "root") {
+		return nil
+	}
+
+	rootAccount := appsv1alpha1.SystemAccount{
+		Name:        "root",
+		InitAccount: true,
+	}
+	existSecret, err := t.checkAccountSecretExist(transCtx, synthesizeComp, rootAccount)
+	if err != nil {
+		return err
+	}
+	if existSecret != nil {
+		return nil
+	}
+
+	password := t.getLegacyConnCredentialPassword(transCtx)
+	if len(password) == 0 && transCtx.Cluster != nil {
+		if restorePwd := factory.GetRestorePassword(transCtx.Cluster, synthesizeComp); restorePwd != "" {
+			password = []byte(restorePwd)
+		}
+	}
+	if len(password) == 0 {
+		t.emitMissingInitAccountSecretEvent(transCtx, synthesizeComp, rootAccount)
+		return nil
+	}
+	secret := t.buildAccountSecretWithPassword(synthesizeComp, rootAccount, password)
+	graphCli.Create(dag, secret, inUniversalContext4G())
 	return nil
 }
 
@@ -112,7 +172,11 @@ func (t *componentAccountTransformer) buildAccountSecret(ctx *componentTransform
 			return nil, err
 		}
 	default:
-		password = t.buildPassword(ctx, account)
+		var ok bool
+		password, ok = t.buildPassword(ctx, synthesizeComp, account)
+		if !ok {
+			return nil, nil
+		}
 	}
 	return t.buildAccountSecretWithPassword(synthesizeComp, account, password), nil
 }
@@ -132,18 +196,84 @@ func (t *componentAccountTransformer) getPasswordFromSecret(ctx graph.TransformC
 	return secret.Data[constant.AccountPasswdForSecret], nil
 }
 
-func (t *componentAccountTransformer) buildPassword(ctx *componentTransformContext, account appsv1alpha1.SystemAccount) []byte {
+func (t *componentAccountTransformer) buildPassword(ctx *componentTransformContext, synthesizeComp *component.SynthesizedComponent, account appsv1alpha1.SystemAccount) ([]byte, bool) {
 	// get restore password if exists during recovery.
 	password := factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent.Annotations, ctx.SynthesizeComponent.Name, account.Name)
 	if account.InitAccount && password == "" {
-		// initAccount can also restore from factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent, account).
-		// This is compatibility processing.
-		password = factory.GetRestorePassword(ctx.Cluster, ctx.SynthesizeComponent)
+		if strings.EqualFold(account.Name, "root") && t.isMongoComponent(ctx) {
+			if legacyPwd := t.getLegacyConnCredentialPassword(ctx); len(legacyPwd) > 0 {
+				ctx.V(1).Info("using legacy conn-credential password for init account",
+					"component", ctx.SynthesizeComponent.Name, "account", account.Name)
+				return legacyPwd, true
+			}
+			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
+			if password == "" {
+				return nil, false
+			}
+		} else {
+			// initAccount can also restore from factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent, account).
+			// This is compatibility processing.
+			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
+		}
 	}
 	if password == "" {
-		return t.generatePassword(account)
+		return t.generatePassword(account), true
 	}
-	return []byte(password)
+	return []byte(password), true
+}
+
+func hasAccountName(accounts []appsv1alpha1.SystemAccount, name string) bool {
+	for _, account := range accounts {
+		if strings.EqualFold(account.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *componentAccountTransformer) isMongoComponent(ctx *componentTransformContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.CompDef != nil && ctx.CompDef.Spec.ServiceKind != "" {
+		serviceKind := strings.ToLower(ctx.CompDef.Spec.ServiceKind)
+		for _, alias := range constant.GetMongoDBAlias() {
+			if serviceKind == alias {
+				return true
+			}
+		}
+	}
+	if ctx.SynthesizeComponent != nil && strings.EqualFold(ctx.SynthesizeComponent.CharacterType, constant.MongoDBCharacterType) {
+		return true
+	}
+	return false
+}
+
+func (t *componentAccountTransformer) getLegacyConnCredentialPassword(ctx *componentTransformContext) []byte {
+	if ctx == nil || ctx.Cluster == nil {
+		return nil
+	}
+	secretKey := types.NamespacedName{
+		Namespace: ctx.Cluster.Namespace,
+		Name:      constant.GenerateDefaultConnCredential(ctx.Cluster.Name),
+	}
+	secret := &corev1.Secret{}
+	if err := ctx.Client.Get(ctx.Context, secretKey, secret); err != nil {
+		return nil
+	}
+	if pwd, ok := secret.Data[constant.AccountPasswdForSecret]; ok && len(pwd) > 0 {
+		return pwd
+	}
+	return nil
+}
+
+func (t *componentAccountTransformer) emitMissingInitAccountSecretEvent(ctx *componentTransformContext, synthesizeComp *component.SynthesizedComponent, account appsv1alpha1.SystemAccount) {
+	if ctx == nil || ctx.EventRecorder == nil || ctx.Component == nil || synthesizeComp == nil {
+		return
+	}
+	secretName := constant.GenerateAccountSecretName(synthesizeComp.ClusterName, synthesizeComp.Name, account.Name)
+	ctx.EventRecorder.Eventf(ctx.Component, corev1.EventTypeWarning, "InitAccountSecretMissing",
+		"missing legacy conn-credential and restore password for init account, please create secret %s manually", secretName)
 }
 
 func (t *componentAccountTransformer) generatePassword(account appsv1alpha1.SystemAccount) []byte {
