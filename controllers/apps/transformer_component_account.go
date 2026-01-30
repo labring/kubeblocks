@@ -129,11 +129,14 @@ func (t *componentAccountTransformer) ensureLegacyMongoRootSecret(
 		return nil
 	}
 
-	password := t.getLegacyConnCredentialPassword(transCtx)
-	if len(password) == 0 && transCtx.Cluster != nil {
+	var password []byte
+	if transCtx.Cluster != nil {
 		if restorePwd := factory.GetRestorePassword(transCtx.Cluster, synthesizeComp); restorePwd != "" {
 			password = []byte(restorePwd)
 		}
+	}
+	if len(password) == 0 {
+		password = t.getLegacyConnCredentialPassword(transCtx)
 	}
 	if len(password) == 0 {
 		t.emitMissingInitAccountSecretEvent(transCtx, synthesizeComp, rootAccount)
@@ -201,15 +204,16 @@ func (t *componentAccountTransformer) buildPassword(ctx *componentTransformConte
 	password := factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent.Annotations, ctx.SynthesizeComponent.Name, account.Name)
 	if account.InitAccount && password == "" {
 		if strings.EqualFold(account.Name, "root") && t.isMongoComponent(ctx) {
+			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
+			if password != "" {
+				return []byte(password), true
+			}
 			if legacyPwd := t.getLegacyConnCredentialPassword(ctx); len(legacyPwd) > 0 {
 				ctx.V(1).Info("using legacy conn-credential password for init account",
 					"component", ctx.SynthesizeComponent.Name, "account", account.Name)
 				return legacyPwd, true
 			}
-			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
-			if password == "" {
-				return nil, false
-			}
+			return nil, false
 		} else {
 			// initAccount can also restore from factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent, account).
 			// This is compatibility processing.

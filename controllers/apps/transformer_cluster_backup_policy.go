@@ -746,15 +746,24 @@ func (r *clusterBackupPolicyTransformer) defaultBackupMethod(comp componentItem,
 		return method
 	}
 	// 3) best-effort: use known defaults that exist in backup policy
-	for _, method := range []string{
-		defaultRedisBackupMethod,
-		defaultMySQLBackupMethod,
-		defaultMongoBackupMethod,
-		defaultPostgresBackupMethod,
-	} {
-		if hasBackupMethod(backupPolicy, method) {
-			return method
+	defaultPriority := map[string]int{
+		defaultRedisBackupMethod:    0,
+		defaultMySQLBackupMethod:    1,
+		defaultMongoBackupMethod:    2,
+		defaultPostgresBackupMethod: 3,
+	}
+	bestMethod := ""
+	bestPriority := int(^uint(0) >> 1) // max int
+	if backupPolicy != nil {
+		for _, method := range backupPolicy.Spec.BackupMethods {
+			if p, ok := defaultPriority[method.Name]; ok && p < bestPriority {
+				bestMethod = method.Name
+				bestPriority = p
+			}
 		}
+	}
+	if bestMethod != "" {
+		return bestMethod
 	}
 	return ""
 }
