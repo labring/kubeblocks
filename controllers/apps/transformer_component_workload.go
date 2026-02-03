@@ -586,7 +586,7 @@ func getHealthyLorryClient(pods []*corev1.Pod) (lorry.Client, error) {
 }
 
 func (r *componentWorkloadOps) annotateInstanceSetForMemberJoin() {
-	if r.synthesizeComp.LifecycleActions == nil || r.synthesizeComp.LifecycleActions.MemberJoin == nil {
+	if !r.memberJoinEnabled() {
 		return
 	}
 
@@ -619,6 +619,73 @@ func getPodsToMemberJoinFromAnno(instanceSet *workloads.InstanceSet) sets.Set[st
 
 	if memberJoinStatus := instanceSet.Annotations[constant.MemberJoinStatusAnnotationKey]; memberJoinStatus != "" {
 		podsToMemberjoin.Insert(strings.Split(memberJoinStatus, ",")...)
+	}
+
+	return podsToMemberjoin
+}
+
+func (r *componentWorkloadOps) memberJoinEnabled() bool {
+	if r.synthesizeComp == nil {
+		return false
+	}
+	if r.synthesizeComp.LifecycleActions != nil && r.synthesizeComp.LifecycleActions.MemberJoin != nil {
+		return true
+	}
+	if r.synthesizeComp.CharacterType != constant.MongoDBCharacterType {
+		return false
+	}
+	if r.synthesizeComp.LifecycleActions == nil || r.synthesizeComp.LifecycleActions.RoleProbe == nil {
+		return false
+	}
+	if r.synthesizeComp.LifecycleActions.RoleProbe.BuiltinHandler == nil {
+		return false
+	}
+	return *r.synthesizeComp.LifecycleActions.RoleProbe.BuiltinHandler == appsv1alpha1.MongoDBBuiltinActionHandler
+}
+
+func (r *componentWorkloadOps) detectPodsToMemberJoin(pods []*corev1.Pod) sets.Set[string] {
+	podsToMemberjoin := sets.New[string]()
+	if r.runningITS == nil || r.runningITS.Spec.Replicas == nil {
+		return podsToMemberjoin
+	}
+	if int(*r.runningITS.Spec.Replicas) <= len(r.runningITS.Status.MembersStatus) {
+		return podsToMemberjoin
+	}
+	hasLeader := false
+	for _, status := range r.runningITS.Status.MembersStatus {
+		if status.ReplicaRole != nil && status.ReplicaRole.IsLeader {
+			hasLeader = true
+			break
+		}
+	}
+	if !hasLeader {
+		return podsToMemberjoin
+	}
+
+	memberSet := sets.New[string]()
+	for _, status := range r.runningITS.Status.MembersStatus {
+		memberSet.Insert(status.PodName)
+	}
+
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		if !r.desiredCompPodNameSet.Has(pod.Name) {
+			continue
+		}
+		if !intctrlutil.PodIsReady(pod) && (pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil) {
+			continue
+		}
+		if memberSet.Has(pod.Name) {
+			continue
+		}
+		if pod.Labels != nil {
+			if roleName, ok := pod.Labels[constant.RoleLabelKey]; ok && roleName != "" {
+				continue
+			}
+		}
+		podsToMemberjoin.Insert(pod.Name)
 	}
 
 	return podsToMemberjoin
@@ -732,20 +799,32 @@ func (r *componentWorkloadOps) checkAndDoMemberJoin() error {
 	if r.protoITS.Annotations[constant.MemberJoinStatusAnnotationKey] != "" {
 		return nil
 	}
-
-	podsToMemberjoin := getPodsToMemberJoinFromAnno(r.runningITS)
-	if len(podsToMemberjoin) == 0 {
+	if !r.memberJoinEnabled() {
 		return nil
 	}
 
-	if r.synthesizeComp.LifecycleActions == nil || r.synthesizeComp.LifecycleActions.MemberJoin == nil {
-		podsToMemberjoin.Clear()
+	podsToMemberjoin := getPodsToMemberJoinFromAnno(r.runningITS)
+	if len(podsToMemberjoin) == 0 {
+		labels := constant.GetComponentWellKnownLabels(r.synthesizeComp.ClusterName, r.synthesizeComp.Name)
+		runningPods, err := component.ListPodOwnedByComponent(r.reqCtx.Ctx, r.cli, r.synthesizeComp.Namespace, labels, inDataContext4C())
+		if err != nil {
+			return fmt.Errorf("failed to list pods for member join detection: %w", err)
+		}
+		podsToMemberjoin = r.detectPodsToMemberJoin(runningPods)
+		if len(podsToMemberjoin) == 0 {
+			return nil
+		}
+		r.reqCtx.Log.Info("detected pods to member join", "pods", sets.List(podsToMemberjoin))
 	}
+
 	err := r.doMemberJoin(podsToMemberjoin)
 	if err != nil {
 		return err
 	}
 
+	if r.protoITS.Annotations == nil {
+		r.protoITS.Annotations = make(map[string]string)
+	}
 	r.protoITS.Annotations[constant.MemberJoinStatusAnnotationKey] = strings.Join(sets.List(podsToMemberjoin), ",")
 
 	return nil
@@ -783,11 +862,15 @@ func (r *componentWorkloadOps) doMemberJoin(podSet sets.Set[string]) error {
 		return nil
 	}
 
-	if r.synthesizeComp.LifecycleActions == nil || r.synthesizeComp.LifecycleActions.MemberJoin == nil {
+	if !r.memberJoinEnabled() {
 		return nil
 	}
 
-	if err := r.precondition(constant.MemberJoinAction, r.synthesizeComp.LifecycleActions.MemberJoin.CustomHandler); err != nil {
+	var action *appsv1alpha1.Action
+	if r.synthesizeComp.LifecycleActions != nil && r.synthesizeComp.LifecycleActions.MemberJoin != nil {
+		action = r.synthesizeComp.LifecycleActions.MemberJoin.CustomHandler
+	}
+	if err := r.precondition(constant.MemberJoinAction, action); err != nil {
 		return err
 	}
 
