@@ -1,4 +1,4 @@
-name: Release Delete
+name: RELEASE-DELETE
 
 on:
   schedule:

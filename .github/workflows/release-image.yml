@@ -9,6 +9,34 @@ on:
         description: 'The release version of image'
         required: false
         default: 'latest'
+      image_repo:
+        description: 'Image repository for kubeblocks (e.g. wallykk/kubeblocks)'
+        required: false
+        default: 'wallykk/kubeblocks'
+      tools_image_repo:
+        description: 'Image repository for kubeblocks-tools (e.g. wallykk/kubeblocks-tools)'
+        required: false
+        default: 'wallykk/kubeblocks-tools'
+      datascript_image_repo:
+        description: 'Image repository for kubeblocks-datascript (e.g. wallykk/kubeblocks-datascript)'
+        required: false
+        default: 'wallykk/kubeblocks-datascript'
+      dataprotection_image_repo:
+        description: 'Image repository for kubeblocks-dataprotection (e.g. wallykk/kubeblocks-dataprotection)'
+        required: false
+        default: 'wallykk/kubeblocks-dataprotection'
+      charts_image_repo:
+        description: 'Image repository for kubeblocks-charts (e.g. wallykk/kubeblocks-charts)'
+        required: false
+        default: 'wallykk/kubeblocks-charts'
+      dev_image_repo:
+        description: 'Image repository for kubeblocks-dev (e.g. wallykk/kubeblocks-dev)'
+        required: false
+        default: 'wallykk/kubeblocks-dev'
+      image_targets:
+        description: 'Comma-separated targets: kubeblocks,tools,datascript,dataprotection,charts,dev or all'
+        required: false
+        default: 'all'
       dockerfile:
         description: 'release specify Dockerfile or empty to release all images'
         required: false
@@ -36,10 +64,7 @@ jobs:
     outputs:
       release-version: ${{ steps.get_release_version.outputs.release_version }}
       release-version-bump: ${{ steps.get_release_version.outputs.release_version_bump }}
-      git-commit: ${{ steps.get_git_info.outputs.git_commit }}
-      git-version: ${{ steps.get_git_info.outputs.git_version }}
     steps:
-      - uses: actions/checkout@v4
       - name: Get Release Version
         id: get_release_version
         run: |
@@ -55,86 +80,115 @@ jobs:
           RELEASE_VERSION_BUMP="${RELEASE_VERSION/v/}"
           echo release_version_bump=$RELEASE_VERSION_BUMP >> $GITHUB_OUTPUT
 
-      - name: get git info
-        id: get_git_info
+  precheck-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Docker Hub secrets
         run: |
-          GIT_COMMIT=$(git rev-list -1 HEAD)
-          GIT_VERSION=$(git describe --always --abbrev=0 --tag)
-          echo git_commit=$GIT_COMMIT >> $GITHUB_OUTPUT
-          echo git_version=$GIT_VERSION >> $GITHUB_OUTPUT
+          missing=()
+          if [[ -z "${{ secrets.DOCKER_REGISTRY_USER }}" ]]; then
+            missing+=("DOCKER_REGISTRY_USER")
+          fi
+          if [[ -z "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" ]]; then
+            missing+=("DOCKER_REGISTRY_PASSWORD")
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error title=Missing secrets::${missing[*]} are not set in repository secrets"
+            exit 1
+          fi
 
   release-image:
-    if: ${{ inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile' }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.64
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',kubeblocks,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
       MAKE_OPS_PRE: "generate"
-      IMG: "apecloud/kubeblocks"
+      IMG: "${{ inputs.image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       GO_VERSION: "1.21"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile"
-      BUILDX_ARGS: |
-        VERSION=${{ needs.release-version.outputs.release-version }}
-        GIT_COMMIT=${{ needs.release-version.outputs.git-commit }}
-        GIT_VERSION=${{ needs.release-version.outputs.git-version }}
     secrets: inherit
 
   release-tools-image:
-    if: ${{ inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-tools' }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.24
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',tools,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-tools') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
       MAKE_OPS_PRE: "module generate test-go-generate"
-      IMG: "apecloud/kubeblocks-tools"
+      IMG: "${{ inputs.tools_image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       GO_VERSION: "1.21"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-tools"
     secrets: inherit
 
   release-datascript-image:
-    if: ${{ inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-datascript' }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.24
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',datascript,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-datascript') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
-      IMG: "apecloud/kubeblocks-datascript"
+      IMG: "${{ inputs.datascript_image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-datascript"
     secrets: inherit
 
   release-dataprotection-image:
-    if: ${{ inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-dataprotection' }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.24
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',dataprotection,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-dataprotection') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
-      IMG: "apecloud/kubeblocks-dataprotection"
+      IMG: "${{ inputs.dataprotection_image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-dataprotection"
     secrets: inherit
 
   release-charts-image:
-    if: ${{ github.event_name  == 'workflow_dispatch' && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-charts') }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.24
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ github.event_name  == 'workflow_dispatch' && (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',charts,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-charts') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
       MAKE_OPS_PRE: "helm-package VERSION=${{ needs.release-version.outputs.release-version-bump }}"
-      IMG: "apecloud/kubeblocks-charts"
+      IMG: "${{ inputs.charts_image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       GO_VERSION: "1.21"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-charts"
     secrets: inherit
 
   release-dev-image:
-    if: ${{ github.event_name  == 'workflow_dispatch' && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-dev') }}
-    needs: release-version
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.24
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ github.event_name  == 'workflow_dispatch' && (inputs.image_targets == '' || inputs.image_targets == 'all' || contains(format(',{0},', inputs.image_targets), ',dev,')) && (inputs.dockerfile == '' || inputs.dockerfile == 'Dockerfile-dev') }}
+    needs: [ release-version, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
-      IMG: "apecloud/kubeblocks-dev"
+      IMG: "${{ inputs.dev_image_repo }}"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-dev"
       CONTEXT: "./docker"
@@ -180,6 +234,9 @@ jobs:
           key: ${{ steps.release_message.outputs.artifact_key }}
 
   send-message:
+    permissions:
+      contents: read
+      id-token: write
     needs: [ release-message ]
     if: ${{ always() && github.event.action == 'published' }}
     uses: apecloud/apecloud-cd/.github/workflows/feishui-message.yml@v0.1.38
@@ -218,11 +275,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test-type: [ apecloud-mysql|postgresql|redis|mongodb|kafka|asmysql|elasticsearch|zookeeper|rabbitmq|damengdb|kingbase|gaussdb,
-                     pulsar|mysqlscale|weaviate|qdrant|smartengine|greptimedb|nebula|risingwave|starrocks|etcd|oceanbase|mssql,
-                     foxlake|orioledb|oracle-mysql|vanilla-pg|openldap|polardbx|opensearch|vllm|tdengine|milvus|clickhouse|vastbase,
-                     pika|ggml|mariadb|tidb|xinference|oracle|opengauss|influxdb|flink|solr|doris|loki|victoria-metrics,
-                     halo|mogdb|oceanbase-ent|starrocks-ent|apecloud-postgresql|yashandb|redis-cluster|camellia-redis-proxy|dmdb|minio|orchestrator|rocketmq ]
+        test-type: [ apecloud-mysql|postgresql|redis|mongodb|kafka|pulsar|mysqlscale|weaviate|qdrant|smartengine,
+                     greptimedb|nebula|risingwave|starrocks|etcd|oceanbase|foxlake|orioledb|oracle-mysql|official-pg|asmysql|openldap,
+                     polardbx|opensearch|elasticsearch|vllm|tdengine|milvus|clickhouse|pika|ggml|zookeeper|mariadb,
+                     tidb|xinference|oracle|opengauss|influxdb|flink|mogdb|redis-cluster|camellia-redis-proxy|pulsar-nodeport ]
     with:
       GITHUB_REPO: "apecloud/kubeblocks"
       BRANCH_NAME: "main"
@@ -244,4 +300,3 @@ jobs:
         continue-on-error: true
         run: |
           bash .github/utils/utils.sh --type 17 --tag-name "${{ env.RELEASE_VERSION }}-${{ matrix.type }}"
-

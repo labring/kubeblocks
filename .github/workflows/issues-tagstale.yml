@@ -1,5 +1,4 @@
-name: Issues Tag Stale
-
+name: ISSUES-TAG-STALE
 on:
   schedule:
   - cron: "0 0 * * 1" #Runs at 00:00 UTC on Mon

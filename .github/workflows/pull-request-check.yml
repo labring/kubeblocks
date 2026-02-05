@@ -1,11 +1,8 @@
-name: Pull Request Check
+name: PULL-REQUEST-CHECK
 
 on:
   pull_request_target:
     types: [ edited, opened ]
-    branches:
-      - main
-      - release-*
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -30,11 +27,9 @@ jobs:
 
       - uses: actions/checkout@v4
       - name: check issue link
-        env:
-          PR_TITLE: ${{github.event.pull_request.title}}
         run: |
           bash ${{ github.workspace }}/.github/utils/issue_link.sh \
             ${{ github.repository }} \
             ${{ github.repository_owner }} \
             ${{ github.event.pull_request.number }} \
-            "${PR_TITLE}"
+            "${{ github.event.pull_request.title }}"
