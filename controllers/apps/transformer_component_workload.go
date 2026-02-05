@@ -631,6 +631,8 @@ func (r *componentWorkloadOps) memberJoinEnabled() bool {
 	if r.synthesizeComp.LifecycleActions != nil && r.synthesizeComp.LifecycleActions.MemberJoin != nil {
 		return true
 	}
+	// MongoDB with a roleProbe builtin handler can perform member joins via lorry
+	// even without an explicit MemberJoin action configuration.
 	if r.synthesizeComp.CharacterType != constant.MongoDBCharacterType {
 		return false
 	}
@@ -671,15 +673,19 @@ func (r *componentWorkloadOps) detectPodsToMemberJoin(pods []*corev1.Pod) sets.S
 		if pod == nil {
 			continue
 		}
+		// Skip pods not in desired set.
 		if !r.desiredCompPodNameSet.Has(pod.Name) {
 			continue
 		}
-		if !intctrlutil.PodIsReady(pod) && (pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil) {
+		// Skip pods being deleted, or neither ready nor running.
+		if pod.DeletionTimestamp != nil || (!intctrlutil.PodIsReady(pod) && pod.Status.Phase != corev1.PodRunning) {
 			continue
 		}
+		// Skip pods already reported as members.
 		if memberSet.Has(pod.Name) {
 			continue
 		}
+		// Skip pods with existing role labels.
 		if pod.Labels != nil {
 			if roleName, ok := pod.Labels[constant.RoleLabelKey]; ok && roleName != "" {
 				continue
@@ -796,7 +802,7 @@ func (r *componentWorkloadOps) leaveMemberForPod(pod *corev1.Pod, pods []*corev1
 
 func (r *componentWorkloadOps) checkAndDoMemberJoin() error {
 	// just wait for memberjoin anno to be updated
-	if r.protoITS.Annotations[constant.MemberJoinStatusAnnotationKey] != "" {
+	if r.protoITS.Annotations != nil && r.protoITS.Annotations[constant.MemberJoinStatusAnnotationKey] != "" {
 		return nil
 	}
 	if !r.memberJoinEnabled() {
@@ -804,9 +810,11 @@ func (r *componentWorkloadOps) checkAndDoMemberJoin() error {
 	}
 
 	podsToMemberjoin := getPodsToMemberJoinFromAnno(r.runningITS)
+	var runningPods []*corev1.Pod
 	if len(podsToMemberjoin) == 0 {
 		labels := constant.GetComponentWellKnownLabels(r.synthesizeComp.ClusterName, r.synthesizeComp.Name)
-		runningPods, err := component.ListPodOwnedByComponent(r.reqCtx.Ctx, r.cli, r.synthesizeComp.Namespace, labels, inDataContext4C())
+		var err error
+		runningPods, err = component.ListPodOwnedByComponent(r.reqCtx.Ctx, r.cli, r.synthesizeComp.Namespace, labels, inDataContext4C())
 		if err != nil {
 			return fmt.Errorf("failed to list pods for member join detection: %w", err)
 		}
@@ -817,7 +825,7 @@ func (r *componentWorkloadOps) checkAndDoMemberJoin() error {
 		r.reqCtx.Log.Info("detected pods to member join", "pods", sets.List(podsToMemberjoin))
 	}
 
-	err := r.doMemberJoin(podsToMemberjoin)
+	err := r.doMemberJoin(podsToMemberjoin, runningPods)
 	if err != nil {
 		return err
 	}
@@ -857,7 +865,7 @@ func (r *componentWorkloadOps) precondition(name string, action *appsv1alpha1.Ac
 	return nil
 }
 
-func (r *componentWorkloadOps) doMemberJoin(podSet sets.Set[string]) error {
+func (r *componentWorkloadOps) doMemberJoin(podSet sets.Set[string], runningPods []*corev1.Pod) error {
 	if len(podSet) == 0 {
 		return nil
 	}
@@ -874,10 +882,13 @@ func (r *componentWorkloadOps) doMemberJoin(podSet sets.Set[string]) error {
 		return err
 	}
 
-	labels := constant.GetComponentWellKnownLabels(r.synthesizeComp.ClusterName, r.synthesizeComp.Name)
-	runningPods, err := component.ListPodOwnedByComponent(r.reqCtx.Ctx, r.cli, r.synthesizeComp.Namespace, labels, inDataContext4C())
-	if err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
+	if runningPods == nil {
+		labels := constant.GetComponentWellKnownLabels(r.synthesizeComp.ClusterName, r.synthesizeComp.Name)
+		var err error
+		runningPods, err = component.ListPodOwnedByComponent(r.reqCtx.Ctx, r.cli, r.synthesizeComp.Namespace, labels, inDataContext4C())
+		if err != nil {
+			return fmt.Errorf("failed to list pods: %w", err)
+		}
 	}
 
 	var joinErrors []error
