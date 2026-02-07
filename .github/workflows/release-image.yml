@@ -69,15 +69,15 @@ jobs:
           - image: kubeblocks
             dockerfile: ./docker/Dockerfile
             context: .
-            image_repo: ${{ inputs.image_repo != '' && inputs.image_repo || format('{0}/{1}/kubeblocks', env.REGISTRY, env.ORG) }}
+            image_repo: ${{ inputs.image_repo != '' && inputs.image_repo || format('ghcr.io/{0}/kubeblocks', github.repository_owner) }}
           - image: kubeblocks-tools
             dockerfile: ./docker/Dockerfile-tools
             context: .
-            image_repo: ${{ inputs.tools_image_repo != '' && inputs.tools_image_repo || format('{0}/{1}/kubeblocks-tools', env.REGISTRY, env.ORG) }}
+            image_repo: ${{ inputs.tools_image_repo != '' && inputs.tools_image_repo || format('ghcr.io/{0}/kubeblocks-tools', github.repository_owner) }}
           - image: kubeblocks-datascript
             dockerfile: ./docker/Dockerfile-datascript
             context: .
-            image_repo: ${{ inputs.datascript_image_repo != '' && inputs.datascript_image_repo || format('{0}/{1}/kubeblocks-datascript', env.REGISTRY, env.ORG) }}
+            image_repo: ${{ inputs.datascript_image_repo != '' && inputs.datascript_image_repo || format('ghcr.io/{0}/kubeblocks-datascript', github.repository_owner) }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up QEMU
