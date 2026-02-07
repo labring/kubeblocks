@@ -19,7 +19,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  ORG: labring
+  ORG: ${{ github.repository_owner }}
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:

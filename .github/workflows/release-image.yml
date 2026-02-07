@@ -12,15 +12,15 @@ on:
       image_repo:
         description: 'Image repository for kubeblocks (e.g. ghcr.io/labring/kubeblocks)'
         required: false
-        default: 'ghcr.io/labring/kubeblocks'
+        default: ''
       tools_image_repo:
         description: 'Image repository for kubeblocks-tools (e.g. ghcr.io/labring/kubeblocks-tools)'
         required: false
-        default: 'ghcr.io/labring/kubeblocks-tools'
+        default: ''
       datascript_image_repo:
         description: 'Image repository for kubeblocks-datascript (e.g. ghcr.io/labring/kubeblocks-datascript)'
         required: false
-        default: 'ghcr.io/labring/kubeblocks-datascript'
+        default: ''
   release:
     types:
       - published
@@ -32,7 +32,7 @@ env:
   GH_TOKEN: ${{ github.token }}
   RELEASE_VERSION: ${{ github.ref_name }}
   REGISTRY: ghcr.io
-  ORG: labring
+  ORG: ${{ github.repository_owner }}
 
 jobs:
   release-version:
@@ -69,15 +69,15 @@ jobs:
           - image: kubeblocks
             dockerfile: ./docker/Dockerfile
             context: .
-            image_repo: ${{ inputs.image_repo }}
+            image_repo: ${{ inputs.image_repo != '' && inputs.image_repo || format('{0}/{1}/kubeblocks', env.REGISTRY, env.ORG) }}
           - image: kubeblocks-tools
             dockerfile: ./docker/Dockerfile-tools
             context: .
-            image_repo: ${{ inputs.tools_image_repo }}
+            image_repo: ${{ inputs.tools_image_repo != '' && inputs.tools_image_repo || format('{0}/{1}/kubeblocks-tools', env.REGISTRY, env.ORG) }}
           - image: kubeblocks-datascript
             dockerfile: ./docker/Dockerfile-datascript
             context: .
-            image_repo: ${{ inputs.datascript_image_repo }}
+            image_repo: ${{ inputs.datascript_image_repo != '' && inputs.datascript_image_repo || format('{0}/{1}/kubeblocks-datascript', env.REGISTRY, env.ORG) }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up QEMU
