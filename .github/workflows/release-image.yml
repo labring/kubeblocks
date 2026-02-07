@@ -54,6 +54,9 @@ on:
     types:
       - published
 
+permissions:
+  contents: write
+
 env:
   GH_TOKEN: ${{ github.token }}
   RELEASE_VERSION: ${{ github.ref_name }}
