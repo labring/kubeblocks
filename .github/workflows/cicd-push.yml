@@ -10,7 +10,7 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-  BASE_BRANCH: origin/main
+  BASE_BRANCH: origin/${{ github.event.repository.default_branch }}
   GO_VERSION: "1.21"
 
 jobs:
@@ -158,6 +158,9 @@ jobs:
             --runner-name ${{ needs.make-test.outputs.runner-name }}
 
   check-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -170,6 +173,9 @@ jobs:
     secrets: inherit
 
   check-tools-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -182,6 +188,9 @@ jobs:
     secrets: inherit
 
   check-datascript-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -192,6 +201,9 @@ jobs:
     secrets: inherit
 
   check-dataprotection-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
