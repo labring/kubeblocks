@@ -1,4 +1,4 @@
-name: Release Charts
+name: Release Chart
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ on:
 env:
   GH_TOKEN: ${{ github.token }}
   RELEASE_VERSION: ${{ github.ref_name }}
-  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
 jobs:
   release-version:
@@ -34,49 +33,60 @@ jobs:
           RELEASE_VERSION_BUMP="${RELEASE_VERSION/v/}"
           echo release_version_bump=$RELEASE_VERSION_BUMP >> $GITHUB_OUTPUT
 
+  precheck-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Docker Hub secrets
+        run: |
+          missing=()
+          if [[ -z "${{ secrets.DOCKER_REGISTRY_USER }}" ]]; then
+            missing+=("DOCKER_REGISTRY_USER")
+          fi
+          if [[ -z "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" ]]; then
+            missing+=("DOCKER_REGISTRY_PASSWORD")
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error title=Missing secrets::${missing[*]} are not set in repository secrets"
+            exit 1
+          fi
+
   release-chart:
     needs: [ release-version ]
-    uses: apecloud/apecloud-cd/.github/workflows/release-charts.yml@v0.1.86
+    uses: apecloud/apecloud-cd/.github/workflows/release-charts.yml@v0.1.43
     with:
       MAKE_OPS: "bump-chart-ver"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
       CHART_NAME: "kubeblocks"
       CHART_DIR: "deploy/helm"
-      APECD_REF: "v0.1.86"
+      APECD_REF: "v0.1.43"
       MAKE_OPS_POST: "install"
       GO_VERSION: "1.21"
     secrets: inherit
 
   release-addons-chart:
     needs: [ release-chart ]
-    uses: apecloud/apecloud-cd/.github/workflows/release-charts.yml@v0.1.86
+    uses: apecloud/apecloud-cd/.github/workflows/release-charts.yml@v0.1.52
     with:
       GITHUB_REPO: "apecloud/kubeblocks-addons"
-      GITHUB_REF: "${{ github.ref_name }}"
+      GITHUB_REF: ${{ github.ref }}
       CHART_DIR: "addons"
-      APECD_REF: "v0.1.86"
+      APECD_REF: "v0.1.52"
       ENABLE_JIHU: false
     secrets: inherit
 
-  release-addons-cluster-chart:
-    needs: [ release-addons-chart ]
-    uses: apecloud/apecloud-cd/.github/workflows/trigger-workflow.yml@v0.1.86
-    with:
-      GITHUB_REPO: "apecloud/kubeblocks-addons"
-      BRANCH_NAME: "${{ github.ref_name }}"
-      WORKFLOW_ID: "release-addons-cluster-chart.yml"
-      APECD_REF: "v0.1.86"
-    secrets: inherit
-
   release-charts-image:
-    needs: [ release-version, release-addons-chart ]
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.86
+    permissions:
+      contents: read
+      id-token: write
+    needs: [ release-version, release-addons-chart, precheck-secrets ]
+    uses: ./.github/workflows/release-image-cache.yml
     with:
       MAKE_OPS_PRE: "helm-package VERSION=${{ needs.release-version.outputs.release-version-bump }}"
-      IMG: "apecloud/kubeblocks-charts"
+      IMG: "wallykk/kubeblocks-charts"
       VERSION: "${{ needs.release-version.outputs.release-version }}"
+      BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
       GO_VERSION: "1.21"
-      APECD_REF: "v0.1.86"
+      APECD_REF: "v0.1.24"
       DOCKERFILE_PATH: "./docker/Dockerfile-charts"
     secrets: inherit
 
@@ -120,13 +130,16 @@ jobs:
           key: ${{ steps.release_message.outputs.artifact_key }}
 
   send-message:
+    permissions:
+      contents: read
+      id-token: write
     needs: [ release-message ]
     if: ${{ always() && github.event.action == 'published' }}
-    uses: apecloud/apecloud-cd/.github/workflows/feishui-message.yml@v0.1.86
+    uses: apecloud/apecloud-cd/.github/workflows/feishui-message.yml@v0.1.38
     with:
       TYPE: "2"
       CONTENT: "release chart ${{ needs.release-message.outputs.release-version }} ${{ needs.release-message.outputs.content-result }}"
-      APECD_REF: "v0.1.86"
+      APECD_REF: "v0.1.38"
     secrets: inherit
 
   get-addons-chart-dir:
@@ -139,7 +152,7 @@ jobs:
         with:
           repository: apecloud/kubeblocks-addons
           path: kubeblocks-addons
-          ref: "${{ github.ref_name }}"
+          ref: ${{ github.ref }}
       - name: get addons chart dir
         id: get_addons_chart_dir
         run: |
@@ -160,64 +173,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.get-addons-chart-dir.outputs.matrix) }}
-    uses: apecloud/apecloud-cd/.github/workflows/release-charts-jihu.yml@v0.1.86
+    uses: apecloud/apecloud-cd/.github/workflows/release-charts-jihu.yml@v0.1.52
     with:
       GITHUB_REPO: "apecloud/kubeblocks-addons"
-      GITHUB_REF: "${{ github.ref_name }}"
+      GITHUB_REF: ${{ github.ref }}
       CHART_DIR: "addons"
       SPECIFY_CHART: "${{ matrix.addon-name }}"
-      APECD_REF: "v0.1.86"
-    secrets: inherit
-
-  release-addons-chart-ent:
-    needs: [ release-chart ]
-    uses: apecloud/apecloud-cd/.github/workflows/release-charts-enterprise.yml@v0.1.86
-    with:
-      GITHUB_REPO: "apecloud/apecloud-addons"
-      GITHUB_REF: "${{ github.ref_name }}"
-      CHART_DIR: "addons"
-      APECD_REF: "v0.1.86"
-      ENABLE_JIHU: false
-    secrets: inherit
-
-  get-addons-chart-dir-ent:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.get_addons_chart_dir.outputs.matrix }}
-    steps:
-      - name: Checkout apecloud-addons Code
-        uses: actions/checkout@v4
-        with:
-          repository: apecloud/apecloud-addons
-          path: apecloud-addons
-          ref: "${{ github.ref_name }}"
-          token: ${{ env.GITHUB_TOKEN }}
-
-      - name: get addons chart dir
-        id: get_addons_chart_dir
-        run: |
-          addons_list=$(ls apecloud-addons/addons)
-          ADDONS_DIR=""
-          for addons_name in $( echo "$addons_list" ); do
-              if [[ -z "$ADDONS_DIR" ]]; then
-                  ADDONS_DIR="{\"addon-name\":\"$addons_name\"}"
-              else
-                  ADDONS_DIR="$ADDONS_DIR,{\"addon-name\":\"$addons_name\"}"
-              fi
-          done
-          echo "$ADDONS_DIR"
-          echo "matrix={\"include\":[$ADDONS_DIR]}" >> $GITHUB_OUTPUT
-
-  release-addons-chart-jihu-ent:
-    needs: [ get-addons-chart-dir-ent ]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.get-addons-chart-dir-ent.outputs.matrix) }}
-    uses: apecloud/apecloud-cd/.github/workflows/release-charts-jihu-enterprise.yml@v0.1.86
-    with:
-      GITHUB_REPO: "apecloud/apecloud-addons"
-      GITHUB_REF: "${{ github.ref_name }}"
-      CHART_DIR: "addons"
-      SPECIFY_CHART: "${{ matrix.addon-name }}"
-      APECD_REF: "v0.1.86"
+      APECD_REF: "v0.1.52"
     secrets: inherit

@@ -1,4 +1,4 @@
-name: Test E2E Performance
+name: E2E Performance Test
 
 on:
   workflow_dispatch:
@@ -35,11 +35,9 @@ on:
       K8S_VERSION:
         description: 'eks version'
         required: false
-        default: '1.27'
+        default: '1.26'
         type: choice
         options:
-          - 1.29
-          - 1.28
           - 1.27
           - 1.26
           - 1.25

@@ -12,12 +12,10 @@ on:
         required: false
         default: ''
       TEST_TYPE:
-        description: 'test type (e.g.  apecloud-mysql|postgresql|redis|mongodb|kafka|pulsar|mysqlscale|weaviate|qdrant|
-        smartengine|greptimedb|nebula|risingwave|starrocks|etcd|oceanbase|foxlake|orioledb|vanilla-pg|asmysql|openldap|
-        polardbx|opensearch|elasticsearch|vllm|tdengine|milvus|clickhouse|pika|ggml|zookeeper|mariadb|tidb|xinference|
-        oracle|opengauss|influxdb|flink|solr|mogdb|oceanbase-ent|starrocks-ent|apecloud-postgresql|yashandb|
-        redis-cluster|camellia-redis-proxy|dmdb|minio|orchestrator|rabbitmq|loki|victoria-metrics|gaussdb|damengdb|
-        kingbase|vastbase|mssql|rocketmq)'
+        description: 'test type (e.g. apecloud-mysql|postgresql|redis|mongodb|kafka|pulsar|weaviate|qdrant|
+        smartengine|mysqlscale|greptimedb|nebula|risingwave|starrocks|etcd|foxlake|oracle-mysql|asmysql|openldap|
+        milvus|clickhouse|pika|opensearch|elasticsearch|tdengine|vllm|orioledb|official-pg|ggml|zookeeper|
+        mariadb|tidb|xinference|oracle|opengauss|influxdb|flink)'
         required: false
         default: ''
       CLOUD_PROVIDER:
@@ -28,16 +26,12 @@ on:
         options:
           - gke
           - eks
-          - aks
-          - aks-cn
       CLUSTER_VERSION:
-        description: 'k8s cluster version'
+        description: 'k8s cluster version (e.g. 1.26)'
         required: false
-        default: '1.27'
+        default: '1.26'
         type: choice
         options:
-          - 1.29
-          - 1.28
           - 1.27
           - 1.26
           - 1.25
@@ -89,11 +83,7 @@ jobs:
           if [[ "${{ inputs.CLOUD_PROVIDER }}" == 'eks' && -z "$CLUSTER_REGION" ]]; then
               CLUSTER_REGION="${{ vars.REGION_AWS_EKS }}"
           elif [[ "${{ inputs.CLOUD_PROVIDER }}" == 'gke' && -z "$CLUSTER_REGION" ]]; then
-              CLUSTER_REGION="${{ vars.REGION_GCP_GKE }}"
-          elif [[ "${{ inputs.CLOUD_PROVIDER }}" == 'aks' && -z "$CLUSTER_REGION" ]]; then
-              CLUSTER_REGION="${{ vars.REGION_AZURE_AKS }}"
-          elif [[ "${{ inputs.CLOUD_PROVIDER }}" == 'aks-cn' && -z "$CLUSTER_REGION" ]]; then
-              CLUSTER_REGION="${{ vars.REGION_AZURE_CN_AKS }}"
+              CLUSTER_REGION="${{ vars.REGION_GCP_GEK }}"
           fi
           echo cluster-region=$CLUSTER_REGION >> $GITHUB_OUTPUT
 

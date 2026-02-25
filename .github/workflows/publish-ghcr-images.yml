@@ -1,0 +1,83 @@
+name: Publish Images to GHCR
+
+on:
+  push:
+    branches:
+      - "**"
+    tags-ignore:
+      - "**"
+  workflow_dispatch:
+
+# Required for pushing to ghcr.io with GITHUB_TOKEN.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-ghcr-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  ORG: ${{ github.repository_owner }}
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  publish:
+    name: Build and Push (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    # Only publish on the repository's default branch (i.e. after PRs merge).
+    if: github.repository_owner == env.ORG && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: kubeblocks
+            dockerfile: ./docker/Dockerfile
+            context: .
+          - image: kubeblocks-tools
+            dockerfile: ./docker/Dockerfile-tools
+            context: .
+          - image: kubeblocks-datascript
+            dockerfile: ./docker/Dockerfile-datascript
+            context: .
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false

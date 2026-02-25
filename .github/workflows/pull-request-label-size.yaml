@@ -1,11 +1,8 @@
-name: Pull Request Label Size
+name: PULL-REQUEST-LABEL-SIZE
 
 on:
   pull_request_target:
     types: [ edited, opened, synchronize ]
-    branches:
-      - main
-      - release-*
 
 
 jobs:

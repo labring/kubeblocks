@@ -1,15 +1,16 @@
-name: CICD Push
+name: CICD-PUSH
 
 on:
   push:
     branches:
-      - '**'
+      - '*'
+      - '*/*'
     tags-ignore:
-      - '**'
+      - '*'
 
 env:
   GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-  BASE_BRANCH: origin/main
+  BASE_BRANCH: origin/${{ github.event.repository.default_branch }}
   GO_VERSION: "1.21"
 
 jobs:
@@ -18,8 +19,6 @@ jobs:
     outputs:
       trigger-mode: ${{ steps.get_trigger_mode.outputs.trigger_mode }}
       base-commitid: ${{ steps.get_trigger_mode.outputs.base_commitid }}
-      git-commit: ${{ steps.get_git_info.outputs.git_commit }}
-      git-version: ${{ steps.get_git_info.outputs.git_version }}
     steps:
       - name: Cancel Previous Runs
         if: github.ref_name != 'main'
@@ -47,14 +46,6 @@ jobs:
           echo trigger_mode=$TRIGGER_MODE >> $GITHUB_OUTPUT
           echo base_commitid=$BASE_COMMITID >> $GITHUB_OUTPUT
 
-      - name: get git info
-        id: get_git_info
-        run: |
-          GIT_COMMIT=$(git rev-list -1 HEAD)
-          GIT_VERSION=$(git describe --always --abbrev=0 --tag)
-          echo git_commit=$GIT_COMMIT >> $GITHUB_OUTPUT
-          echo git_version=$GIT_VERSION >> $GITHUB_OUTPUT
-
       - name: merge releasing to release
         if: ${{ startsWith(github.ref_name, 'releasing-') }}
         run: |
@@ -72,7 +63,6 @@ jobs:
           fetch-depth: 0
       - name: install pcregrep
         run: |
-          sudo rm /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install pcregrep
 
@@ -82,7 +72,7 @@ jobs:
           echo "FILE_PATH: $FILE_PATH"
           for filePath in $(echo "$FILE_PATH"); do
               filePath="${filePath%/*}"
-              if [[ -d $filePath && "$filePath" != *"i18n/zh-cn"* ]]; then
+              if [[ -d $filePath ]]; then
                   echo $(pcregrep -r -n -I '[^\x00-\x7f]' $filePath >> pcregrep.out)
               fi
           done
@@ -98,53 +88,47 @@ jobs:
           files: docs/
           config: .github/utils/typos.toml
 
-  push-pre-check:
+  make-test:
     needs: trigger-mode
+    runs-on: [self-hosted, gke-runner-go1.21]
     if: contains(needs.trigger-mode.outputs.trigger-mode, '[test]')
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        ops: [ 'manifests', 'mod-vendor', 'generate', 'lint', 'staticcheck', 'test' ]
+    outputs:
+      runner-name: ${{ steps.get_runner_name.outputs.runner_name }}
     steps:
       - uses: actions/checkout@v4
-      - name: install lib
+      - name: make manifests check
         run: |
-          sudo rm /etc/apt/sources.list.d/microsoft-prod.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libbtrfs-dev \
-            libdevmapper-dev
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: "${{ env.GO_VERSION }}"
-
-      - name: Install golangci-lint
-        if: matrix.ops == 'lint'
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
-
-      - name: make ${{ matrix.ops }}
-        run: |
-          make ${{ matrix.ops }}
+          make manifests
           FILE_CHANGES=`git diff --name-only ${{ github.sha }}`
-          if [[ ("${{ matrix.ops }}" == 'generate' || "${{ matrix.ops }}" == 'manifests') && -n "$FILE_CHANGES" ]]; then
-              echo $FILE_CHANGES
-              echo "make "${{ matrix.ops }}" causes inconsistent files"
-              exit 1
+          if [[ ! -z "$FILE_CHANGES" ]]; then
+            echo $FILE_CHANGES
+            echo "make manifests causes inconsistent files"
+            exit 1
           fi
 
+      - name: make mod-vendor
+        run: |
+          make mod-vendor
+
+      - name: make staticcheck
+        run: |
+          make staticcheck
+
+      - name: make lint
+        run: |
+          make lint
+
+      - name: make test
+        run: |
+          make test
+
       - name: ignore cover pkgs
-        if: matrix.ops == 'test'
         run: |
           bash .github/utils/utils.sh --type 14 \
               --file cover.out \
               --ignore-pkgs "${{ vars.IGNORE_COVERAGE_PKG }}"
 
       - name: upload coverage report
-        if: matrix.ops == 'test'
         uses: codecov/codecov-action@v3
         continue-on-error: true
         with:
@@ -154,23 +138,44 @@ jobs:
           name: codecov-report
           verbose: true
 
+      - name: kill kube-apiserver and etcd
+        id: get_runner_name
+        if: ${{ always() }}
+        run: |
+          echo runner_name=${RUNNER_NAME} >> $GITHUB_OUTPUT
+          bash .github/utils/utils.sh --type 8
+
+  remove-runner:
+    needs: [ trigger-mode, make-test ]
+    runs-on: ubuntu-latest
+    if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[test]') && always() }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: remove runner
+        run: |
+          bash .github/utils/utils.sh --type 9 \
+            --github-token "${{ env.GITHUB_TOKEN }}" \
+            --runner-name ${{ needs.make-test.outputs.runner-name }}
+
   check-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.64
+    uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
     with:
       MAKE_OPS_PRE: "generate"
       IMG: "apecloud/kubeblocks"
       GO_VERSION: "1.21"
       BUILDX_PLATFORMS: "linux/amd64"
       DOCKERFILE_PATH: "./docker/Dockerfile"
-      BUILDX_ARGS: |
-        VERSION=${{ needs.trigger-mode.outputs.git-version }}
-        GIT_COMMIT=${{ needs.trigger-mode.outputs.git-commit }}
-        GIT_VERSION=${{ needs.trigger-mode.outputs.git-version }}
     secrets: inherit
 
   check-tools-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -183,6 +188,9 @@ jobs:
     secrets: inherit
 
   check-datascript-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -193,6 +201,9 @@ jobs:
     secrets: inherit
 
   check-dataprotection-image:
+    permissions:
+      contents: read
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docker]') }}
     uses: apecloud/apecloud-cd/.github/workflows/release-image-check.yml@v0.1.24
@@ -237,96 +248,3 @@ jobs:
       WORKFLOW_ID: "deploy.yml"
       APECD_REF: "v0.1.43"
     secrets: inherit
-
-  apis-doc:
-    needs: [ trigger-mode ]
-    runs-on: ubuntu-latest
-    if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[apis]') || contains(needs.trigger-mode.outputs.trigger-mode, '[lorry]') }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: install lib
-        run: |
-          sudo rm /etc/apt/sources.list.d/microsoft-prod.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libbtrfs-dev \
-            libdevmapper-dev
-
-      - name: Setup Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: "${{ env.GO_VERSION }}"
-
-      - name: Check apis doc
-        run: |
-          make doc
-          FILE_CHANGES=`git diff --name-only ${{ github.sha }}`
-          if [[ ! -z "$FILE_CHANGES" ]]; then
-            echo $FILE_CHANGES
-            echo "make doc causes apis doc changes"
-            exit 1
-          fi
-
-  check-license-header:
-    needs: [ trigger-mode ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: check license-header
-        run: |
-          check_lh_ret=$(make check-license-header | (grep 'FAIL' || true) )
-          if [[ -n "$check_lh_ret" ]]; then
-            echo "$check_lh_ret"
-            echo "check license-header FAIL"
-            exit 1
-          fi
-
-  push-check:
-    name: make-test
-    needs: [ trigger-mode, push-pre-check, check-image, check-tools-image,
-             check-datascript-image, check-dataprotection-image, check-helm, apis-doc, check-license-header ]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: push pre check
-        run: |
-          if [[ "${{ needs.push-pre-check.result }}" == "failure" || "${{ needs.push-pre-check.result }}" == "cancelled" ]]; then
-              echo "push pre check fail"
-              exit 1
-          fi
-
-      - name: release image check
-        run: |
-          if [[ "${{ needs.check-image.result }}" == "failure" || "${{ needs.check-image.result }}" == "cancelled" ]]; then
-              echo "check kubeblocks image fail"
-              exit 1
-          fi
-
-          if [[ "${{ needs.check-tools-image.result }}" == "failure" || "${{ needs.check-tools-image.result }}" == "cancelled" ]]; then
-              echo "check tools image fail"
-              exit 1
-          fi
-
-          if [[ "${{ needs.check-datascript-image.result }}" == "failure" || "${{ needs.check-datascript-image.result }}" == "cancelled" ]]; then
-              echo "check datascript image fail"
-              exit 1
-          fi
-
-          if [[ "${{ needs.check-dataprotection-image.result }}" == "failure" || "${{ needs.check-dataprotection-image.result }}" == "cancelled" ]]; then
-              echo "check dataprotection image fail"
-              exit 1
-          fi
-
-      - name: apis doc check
-        run: |
-          if [[ "${{ needs.check-license-header.result }}" == "failure" || "${{ needs.check-license-header.result }}" == "cancelled" ]]; then
-              echo "check apis doc fail"
-              exit 1
-          fi
-
-      - name: license header check
-        run: |
-          if [[ "${{ needs.check-license-header.result }}" == "failure" || "${{ needs.check-license-header.result }}" == "cancelled" ]]; then
-              echo "check license header fail"
-              exit 1
-          fi
