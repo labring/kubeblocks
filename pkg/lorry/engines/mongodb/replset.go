@@ -50,9 +50,17 @@ func GetReplSetStatus(ctx context.Context, client *mongo.Client) (*ReplSetStatus
 }
 
 func SetReplSetConfig(ctx context.Context, rsClient *mongo.Client, cfg *RSConfig) error {
+	return SetReplSetConfigWithForce(ctx, rsClient, cfg, false)
+}
+
+func SetReplSetConfigWithForce(ctx context.Context, rsClient *mongo.Client, cfg *RSConfig, force bool) error {
 	resp := OKResponse{}
 
-	res := rsClient.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetReconfig", Value: cfg}})
+	cmd := bson.D{{Key: "replSetReconfig", Value: cfg}}
+	if force {
+		cmd = append(cmd, bson.E{Key: "force", Value: true})
+	}
+	res := rsClient.Database("admin").RunCommand(ctx, cmd)
 	if res.Err() != nil {
 		err := errors.Wrap(res.Err(), "replSetReconfig")
 		return err

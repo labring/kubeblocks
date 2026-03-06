@@ -366,11 +366,19 @@ func (mgr *Manager) GetReplSetClient(ctx context.Context, cluster *dcs.Cluster) 
 }
 
 func (mgr *Manager) GetLeaderClient(ctx context.Context, cluster *dcs.Cluster) (*mongo.Client, error) {
+	if cluster == nil {
+		return nil, fmt.Errorf("cluster is nil")
+	}
 	if cluster.Leader == nil || cluster.Leader.Name == "" {
-		return nil, fmt.Errorf("cluster has no leader")
+		mgr.Logger.Info("cluster has no leader in dcs, fallback to replset client")
+		return mgr.GetReplSetClient(ctx, cluster)
 	}
 
 	leaderMember := cluster.GetMemberWithName(cluster.Leader.Name)
+	if leaderMember == nil {
+		mgr.Logger.Info("leader not found in members, fallback to replset client", "leader", cluster.Leader.Name)
+		return mgr.GetReplSetClient(ctx, cluster)
+	}
 	host := cluster.GetMemberAddrWithPort(*leaderMember)
 	return NewReplSetClient(context.TODO(), []string{host})
 }
@@ -512,11 +520,58 @@ func (mgr *Manager) JoinCurrentMemberToCluster(ctx context.Context, cluster *dcs
 	defer client.Disconnect(ctx) //nolint:errcheck
 
 	currentMember := cluster.GetMemberWithName(mgr.GetCurrentMemberName())
-	currentHost := cluster.GetMemberAddrWithPort(*currentMember)
+	currentHost := ""
+	if currentMember != nil {
+		currentHost = cluster.GetMemberAddrWithPort(*currentMember)
+	}
 	rsConfig, err := GetReplSetConfig(ctx, client)
 	if rsConfig == nil {
 		mgr.Logger.Info("Get replSet config failed", "error", err.Error())
 		return err
+	}
+
+	// De-duplicate hosts to avoid NewReplicaSetConfigurationIncompatible
+	changed := false
+	hasCurrent := false
+	hostSeen := make(map[string]struct{}, len(rsConfig.Members))
+	newMembers := make([]ConfigMember, 0, len(rsConfig.Members))
+	for i := range rsConfig.Members {
+		member := rsConfig.Members[i]
+		host := member.Host
+		if host == "" {
+			changed = true
+			continue
+		}
+		if _, ok := hostSeen[host]; ok {
+			changed = true
+			continue
+		}
+		if strings.HasPrefix(host, mgr.CurrentMemberName) || strings.HasPrefix(host, mgr.CurrentMemberIP) {
+			hasCurrent = true
+			if currentHost != "" && host != currentHost {
+				member.Host = currentHost
+				changed = true
+				host = currentHost
+			}
+		}
+		hostSeen[host] = struct{}{}
+		newMembers = append(newMembers, member)
+	}
+	if len(newMembers) != len(rsConfig.Members) {
+		rsConfig.Members = newMembers
+	}
+	if !hasCurrent && currentHost != "" {
+		if _, ok := hostSeen[currentHost]; ok {
+			hasCurrent = true
+		}
+	}
+
+	if hasCurrent {
+		if changed {
+			rsConfig.Version++
+			return SetReplSetConfig(ctx, client, rsConfig)
+		}
+		return nil
 	}
 
 	var lastID int
@@ -565,7 +620,80 @@ func (mgr *Manager) LeaveMemberFromCluster(ctx context.Context, cluster *dcs.Clu
 
 	rsConfig.Members = configMembers
 	rsConfig.Version++
-	return SetReplSetConfig(ctx, client, rsConfig)
+	if err := SetReplSetConfig(ctx, client, rsConfig); err != nil {
+		return err
+	}
+
+	// If only one member left, make sure it can be elected as primary.
+	if len(rsConfig.Members) == 1 {
+		if err := mgr.ensureSingleMemberPrimary(ctx, cluster, client, rsConfig); err != nil {
+			mgr.Logger.Info("ensure single member primary failed", "error", err.Error())
+			return err
+		}
+	}
+	return nil
+}
+
+func (mgr *Manager) ensureSingleMemberPrimary(ctx context.Context, cluster *dcs.Cluster, client *mongo.Client, rsConfig *RSConfig) error {
+	if rsConfig == nil {
+		cfg, err := GetReplSetConfig(ctx, client)
+		if cfg == nil {
+			return err
+		}
+		rsConfig = cfg
+	}
+	if len(rsConfig.Members) != 1 {
+		return nil
+	}
+
+	changed := false
+	member := &rsConfig.Members[0]
+
+	if cluster != nil {
+		currentMember := cluster.GetMemberWithName(mgr.GetCurrentMemberName())
+		if currentMember != nil {
+			host := cluster.GetMemberAddrWithPort(*currentMember)
+			if host != "" && member.Host != host {
+				member.Host = host
+				changed = true
+			}
+		}
+	}
+
+	if member.Priority != PrimaryPriority {
+		member.Priority = PrimaryPriority
+		changed = true
+	}
+	if member.Votes == nil || *member.Votes < 1 {
+		votes := DefaultVotes
+		member.Votes = &votes
+		changed = true
+	}
+	if member.Hidden == nil || *member.Hidden {
+		hidden := false
+		member.Hidden = &hidden
+		changed = true
+	}
+	if member.ArbiterOnly == nil || *member.ArbiterOnly {
+		arbiterOnly := false
+		member.ArbiterOnly = &arbiterOnly
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	rsConfig.Version++
+	isLeader := false
+	if ok, err := mgr.IsLeader(ctx, cluster); err == nil {
+		isLeader = ok
+	}
+	force := !isLeader
+	if force {
+		mgr.Logger.Info("single member not primary, force replset reconfig to ensure primary")
+	}
+	return SetReplSetConfigWithForce(ctx, client, rsConfig, force)
 }
 
 func (mgr *Manager) IsClusterHealthy(ctx context.Context, cluster *dcs.Cluster) bool {
