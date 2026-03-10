@@ -22,6 +22,7 @@ package apps
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"golang.org/x/exp/slices"
 	corev1 "k8s.io/api/core/v1"
@@ -45,7 +46,11 @@ import (
 )
 
 const (
-	defaultCronExpression = "0 18 * * *"
+	defaultCronExpression       = "0 18 * * *"
+	defaultRedisBackupMethod    = "datafile"
+	defaultMySQLBackupMethod    = "xtrabackup"
+	defaultMongoBackupMethod    = "dump"
+	defaultPostgresBackupMethod = "pg-basebackup"
 )
 
 // clusterBackupPolicyTransformer transforms the backup policy template to the data protection backup policy and backup schedule.
@@ -54,6 +59,7 @@ type clusterBackupPolicyTransformer struct {
 	tplCount          int
 	tplIdentifier     string
 	isDefaultTemplate string
+	needPatchCluster  bool
 
 	backupPolicyTpl *appsv1alpha1.BackupPolicyTemplate
 	backupPolicy    *appsv1alpha1.BackupPolicy
@@ -73,6 +79,7 @@ var _ graph.Transformer = &clusterBackupPolicyTransformer{}
 // Transform transforms the backup policy template to the backup policy and backup schedule.
 func (r *clusterBackupPolicyTransformer) Transform(ctx graph.TransformContext, dag *graph.DAG) error {
 	r.clusterTransformContext = ctx.(*clusterTransformContext)
+	r.needPatchCluster = false
 	if model.IsObjectDeleting(r.clusterTransformContext.OrigCluster) {
 		return nil
 	}
@@ -181,6 +188,10 @@ func (r *clusterBackupPolicyTransformer) Transform(ctx graph.TransformContext, d
 				transformBackupSchedule(v, policy, j == 0)
 			}
 		}
+	}
+	if r.needPatchCluster {
+		graphCli, _ := r.Client.(model.GraphClient)
+		graphCli.Patch(dag, r.OrigCluster, r.Cluster, &model.ReplaceIfExistingOption{})
 	}
 	return nil
 }
@@ -587,7 +598,7 @@ func (r *clusterBackupPolicyTransformer) mergeClusterBackup(
 	backupPolicy *dpv1alpha1.BackupPolicy,
 	backupSchedule *dpv1alpha1.BackupSchedule,
 ) *dpv1alpha1.BackupSchedule {
-	cluster := r.OrigCluster
+	cluster := r.Cluster
 	backupEnabled := func() bool {
 		return cluster.Spec.Backup != nil && boolValue(cluster.Spec.Backup.Enabled)
 	}
@@ -602,6 +613,14 @@ func (r *clusterBackupPolicyTransformer) mergeClusterBackup(
 	}
 
 	backup := cluster.Spec.Backup
+	if backup.Method == "" {
+		backup.Method = r.defaultBackupMethod(comp, backupPolicy)
+		if backup.Method != "" {
+			r.needPatchCluster = true
+			r.V(1).Info("backup method not set, defaulting",
+				"cluster", cluster.Name, "component", comp.componentName, "method", backup.Method)
+		}
+	}
 	method := dputils.GetBackupMethodByName(backup.Method, backupPolicy)
 	// the specified backup method should be in the backup policy, if not, record event and return.
 	if method == nil {
@@ -715,6 +734,125 @@ func (r *clusterBackupPolicyTransformer) mergeClusterBackup(
 		backupSchedule.Spec.Schedules = append(backupSchedule.Spec.Schedules, *sp)
 	}
 	return backupSchedule
+}
+
+func (r *clusterBackupPolicyTransformer) defaultBackupMethod(comp componentItem, backupPolicy *dpv1alpha1.BackupPolicy) string {
+	// 1) serviceKind / builtinHandler based detection
+	if method := r.defaultBackupMethodByServiceKind(comp); method != "" {
+		return method
+	}
+	// 2) component definition name fallback
+	if method := defaultBackupMethodByCompDefName(r.compDefNameFromSpec(comp.compSpec)); method != "" {
+		return method
+	}
+	// 3) best-effort: use known defaults that exist in backup policy
+	defaultPriority := map[string]int{
+		defaultRedisBackupMethod:    0,
+		defaultMySQLBackupMethod:    1,
+		defaultMongoBackupMethod:    2,
+		defaultPostgresBackupMethod: 3,
+	}
+	bestMethod := ""
+	bestPriority := int(^uint(0) >> 1) // max int
+	if backupPolicy != nil {
+		for _, method := range backupPolicy.Spec.BackupMethods {
+			if p, ok := defaultPriority[method.Name]; ok && p < bestPriority {
+				bestMethod = method.Name
+				bestPriority = p
+			}
+		}
+	}
+	if bestMethod != "" {
+		return bestMethod
+	}
+	return ""
+}
+
+func (r *clusterBackupPolicyTransformer) componentServiceKind(comp componentItem) string {
+	compDefName := r.compDefNameFromSpec(comp.compSpec)
+	compDef := r.ComponentDefs[compDefName]
+	if compDef == nil {
+		return ""
+	}
+	if compDef.Spec.ServiceKind != "" {
+		return strings.ToLower(compDef.Spec.ServiceKind)
+	}
+	if compDef.Spec.LifecycleActions != nil {
+		if handler := builtinHandlerFromLifecycleActions(compDef.Spec.LifecycleActions); handler != "" {
+			return strings.ToLower(string(handler))
+		}
+	}
+	return ""
+}
+
+func (r *clusterBackupPolicyTransformer) defaultBackupMethodByServiceKind(comp componentItem) string {
+	serviceKind := r.componentServiceKind(comp)
+	switch serviceKind {
+	case string(appsv1alpha1.RedisBuiltinActionHandler):
+		return defaultRedisBackupMethod
+	case string(appsv1alpha1.MySQLBuiltinActionHandler), string(appsv1alpha1.WeSQLBuiltinActionHandler):
+		return defaultMySQLBackupMethod
+	case string(appsv1alpha1.MongoDBBuiltinActionHandler):
+		return defaultMongoBackupMethod
+	case string(appsv1alpha1.PostgresqlBuiltinActionHandler),
+		string(appsv1alpha1.OfficialPostgresqlBuiltinActionHandler),
+		string(appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler):
+		return defaultPostgresBackupMethod
+	default:
+		return ""
+	}
+}
+
+func defaultBackupMethodByCompDefName(compDefName string) string {
+	name := strings.ToLower(compDefName)
+	switch {
+	case strings.Contains(name, "redis"):
+		return defaultRedisBackupMethod
+	case strings.Contains(name, "mongo"):
+		return defaultMongoBackupMethod
+	case strings.Contains(name, "mysql"), strings.Contains(name, "wesql"):
+		return defaultMySQLBackupMethod
+	case strings.Contains(name, "postgres"), strings.Contains(name, "pg"):
+		return defaultPostgresBackupMethod
+	default:
+		return ""
+	}
+}
+
+func hasBackupMethod(backupPolicy *dpv1alpha1.BackupPolicy, method string) bool {
+	if backupPolicy == nil || method == "" {
+		return false
+	}
+	for _, m := range backupPolicy.Spec.BackupMethods {
+		if m.Name == method {
+			return true
+		}
+	}
+	return false
+}
+
+func builtinHandlerFromLifecycleActions(actions *appsv1alpha1.ComponentLifecycleActions) appsv1alpha1.BuiltinActionHandlerType {
+	if actions == nil {
+		return ""
+	}
+	handlers := []*appsv1alpha1.LifecycleActionHandler{
+		actions.PostProvision,
+		actions.PreTerminate,
+		actions.MemberJoin,
+		actions.MemberLeave,
+		actions.Readonly,
+		actions.Readwrite,
+		actions.DataDump,
+		actions.DataLoad,
+		actions.Reconfigure,
+		actions.AccountProvision,
+	}
+	for _, handler := range handlers {
+		if handler != nil && handler.BuiltinHandler != nil {
+			return *handler.BuiltinHandler
+		}
+	}
+	return ""
 }
 
 // getClusterComponentSpec returns the component which matches the componentDef or componentDefRef.
