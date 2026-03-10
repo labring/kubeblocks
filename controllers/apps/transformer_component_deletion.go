@@ -23,11 +23,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pkg/errors"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
@@ -60,7 +61,14 @@ func (t *componentDeletionTransformer) Transform(ctx graph.TransformContext, dag
 	comp := transCtx.Component
 	cluster, err := t.getCluster(transCtx, comp)
 	if err != nil {
-		return newRequeueError(requeueDuration, err.Error())
+		if !apierrors.IsNotFound(err) {
+			return newRequeueError(requeueDuration, err.Error())
+		}
+		// Cluster has been deleted, use a default cluster with Delete termination policy
+		// to allow the component deletion to proceed
+		cluster = t.newDefaultCluster(comp)
+		transCtx.Logger.Info("cluster not found, using default termination policy for component deletion",
+			"cluster", cluster.Name, "component", comp.Name)
 	}
 
 	// step1: update the component status to deleting
@@ -154,11 +162,23 @@ func (t *componentDeletionTransformer) getCluster(transCtx *componentTransformCo
 		return nil, err
 	}
 	cluster := &appsv1alpha1.Cluster{}
-	err = transCtx.Client.Get(transCtx.Context, types.NamespacedName{Name: clusterName, Namespace: comp.Namespace}, cluster)
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("failed to get cluster %s: %v", clusterName, err))
+	if err = transCtx.Client.Get(transCtx.Context, types.NamespacedName{Name: clusterName, Namespace: comp.Namespace}, cluster); err != nil {
+		return nil, err
 	}
 	return cluster, nil
+}
+
+func (t *componentDeletionTransformer) newDefaultCluster(comp *appsv1alpha1.Component) *appsv1alpha1.Cluster {
+	clusterName := comp.Labels[constant.AppInstanceLabelKey]
+	return &appsv1alpha1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterName,
+			Namespace: comp.Namespace,
+		},
+		Spec: appsv1alpha1.ClusterSpec{
+			TerminationPolicy: appsv1alpha1.Delete,
+		},
+	}
 }
 
 func compOwnedKinds() []client.ObjectList {
