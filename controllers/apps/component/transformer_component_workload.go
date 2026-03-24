@@ -218,7 +218,11 @@ func (t *componentWorkloadTransformer) handleWorkloadStartNStop(transCtx *compon
 }
 
 func isCompStopped(synthesizedComp *component.SynthesizedComponent) bool {
-	return synthesizedComp.Stop != nil && *synthesizedComp.Stop
+	if synthesizedComp.Stop != nil && *synthesizedComp.Stop {
+		return true
+	}
+	// Backward compatibility: older stop flows persisted a stopped component as replicas=0.
+	return synthesizedComp.Replicas == 0
 }
 
 func isWorkloadStopped(runningITS *workloads.InstanceSet) bool {

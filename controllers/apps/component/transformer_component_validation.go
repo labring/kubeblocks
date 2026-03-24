@@ -66,6 +66,10 @@ func validateCompReplicas(comp *appsv1.Component, compDef *appsv1.ComponentDefin
 	}
 
 	replicas := comp.Spec.Replicas
+	// Backward compatibility: older stop flows persisted stopped components as replicas=0.
+	if replicas == 0 {
+		return nil
+	}
 	if replicas >= replicasLimit.MinReplicas && replicas <= replicasLimit.MaxReplicas {
 		return nil
 	}

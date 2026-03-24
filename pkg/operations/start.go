@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package operations
 
 import (
+	"encoding/json"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ import (
 
 	appsv1 "github.com/apecloud/kubeblocks/apis/apps/v1"
 	opsv1alpha1 "github.com/apecloud/kubeblocks/apis/operations/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	intctrlcomp "github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
@@ -78,12 +80,19 @@ func (start StartOpsHandler) Action(reqCtx intctrlutil.RequestCtx, cli client.Cl
 			}
 		}
 		compSpec.Stop = nil
+		// Backward compatibility: older stop flows persisted stopped components as replicas=0.
+		if compSpec.Replicas == 0 {
+			restoreComponentReplicas(cluster, compSpec)
+		}
 	}
 	for i, v := range cluster.Spec.ComponentSpecs {
 		startComp(&cluster.Spec.ComponentSpecs[i], v.Name)
 	}
 	for i, v := range cluster.Spec.Shardings {
 		startComp(&cluster.Spec.Shardings[i].Template, v.Name)
+	}
+	if cluster.Annotations != nil {
+		delete(cluster.Annotations, constant.SnapShotForStartAnnotationKey)
 	}
 	return cli.Update(reqCtx.Ctx, cluster)
 }
@@ -111,4 +120,32 @@ func (start StartOpsHandler) ReconcileAction(reqCtx intctrlutil.RequestCtx, cli 
 // SaveLastConfiguration records last configuration to the OpsRequest.status.lastConfiguration
 func (start StartOpsHandler) SaveLastConfiguration(reqCtx intctrlutil.RequestCtx, cli client.Client, opsRes *OpsResource) error {
 	return nil
+}
+
+func restoreComponentReplicas(cluster *appsv1.Cluster, compSpec *appsv1.ClusterComponentSpec) {
+	if cluster == nil || compSpec == nil {
+		return
+	}
+
+	snapshot := map[string]int32{}
+	if cluster.Annotations != nil {
+		if raw, ok := cluster.Annotations[constant.SnapShotForStartAnnotationKey]; ok && raw != "" {
+			if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+				compSpec.Replicas = 1
+				return
+			}
+		}
+	}
+
+	if replicas, ok := snapshot[""]; ok && replicas > 0 {
+		compSpec.Replicas = replicas
+	} else {
+		compSpec.Replicas = 1
+	}
+
+	for i := range compSpec.Instances {
+		if replicas, ok := snapshot[compSpec.Instances[i].Name]; ok {
+			compSpec.Instances[i].Replicas = &replicas
+		}
+	}
 }
