@@ -91,10 +91,30 @@ func (t *componentServiceTransformer) Transform(ctx graph.TransformContext, dag 
 	}
 
 	for svc := range runningServices {
+		// Keep the legacy default service "{cluster}-{component}" for backward compatibility.
+		// Newer releases may no longer synthesize that exact service name, but older clients
+		// can still depend on it after upgrade.
+		if t.isLegacyService(synthesizeComp, svc) {
+			continue
+		}
 		graphCli.Delete(dag, runningServices[svc], appsutil.InDataContext4G())
 	}
 
 	return nil
+}
+
+func (t *componentServiceTransformer) isLegacyService(synthesizeComp *component.SynthesizedComponent, svcName string) bool {
+	legacyDefaultSvcName := constant.GenerateDefaultComponentServiceName(synthesizeComp.ClusterName, synthesizeComp.Name)
+	if svcName != legacyDefaultSvcName {
+		return false
+	}
+	for _, service := range synthesizeComp.ComponentServices {
+		currentSvcName := constant.GenerateComponentServiceName(synthesizeComp.ClusterName, synthesizeComp.Name, service.ServiceName)
+		if currentSvcName == legacyDefaultSvcName {
+			return false
+		}
+	}
+	return true
 }
 
 func (t *componentServiceTransformer) listOwnedServices(ctx context.Context, cli client.Reader,
