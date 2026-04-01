@@ -220,11 +220,31 @@ func (t *componentAccountTransformer) buildPassword(transCtx *componentTransform
 		// This is compatibility processing.
 		password = []byte(factory.GetRestorePassword(synthesizedComp))
 	}
+	if account.InitAccount && len(password) == 0 {
+		// Keep the legacy conn-credential password during upgrade so the new account secret
+		// does not drift from the password exposed by older releases.
+		password = t.getPasswordFromLegacySecret(transCtx)
+	}
 	if len(password) == 0 {
 		password, err := common.GeneratePasswordByConfig(account.PasswordGenerationPolicy)
 		return []byte(password), err
 	}
 	return password, nil
+}
+
+func (t *componentAccountTransformer) getPasswordFromLegacySecret(transCtx *componentTransformContext) []byte {
+	secretKey := types.NamespacedName{
+		Namespace: transCtx.SynthesizeComponent.Namespace,
+		Name:      fmt.Sprintf("%s-conn-credential", transCtx.SynthesizeComponent.ClusterName),
+	}
+	secret := &corev1.Secret{}
+	if err := transCtx.GetClient().Get(transCtx.GetContext(), secretKey, secret); err != nil {
+		return nil
+	}
+	if password, ok := secret.Data[constant.AccountPasswdForSecret]; ok && len(password) > 0 {
+		return password
+	}
+	return nil
 }
 
 func (t *componentAccountTransformer) buildAccountSecretWithPassword(ctx *componentTransformContext,
