@@ -40,6 +40,7 @@ const (
 	PVLastClaimPolicyAnnotationKey       = "apps.kubeblocks.io/pv-last-claim-policy"
 	LastRoleSnapshotVersionAnnotationKey = "apps.kubeblocks.io/last-role-snapshot-version"
 	ComponentScaleInAnnotationKey        = "apps.kubeblocks.io/component-scale-in" // ComponentScaleInAnnotationKey specifies whether the component is scaled in
+	SnapShotForStartAnnotationKey        = "kubeblocks.io/snapshot-for-start"
 
 	// SkipPreTerminateAnnotationKey specifies to skip the pre-terminate action for a component.
 	SkipPreTerminateAnnotationKey = "apps.kubeblocks.io/skip-pre-terminate"
