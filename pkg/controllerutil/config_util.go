@@ -128,7 +128,6 @@ func IsApplyConfigChanged(configMap *corev1.ConfigMap, item v1alpha1.Configurati
 	if err := json.Unmarshal([]byte(lastAppliedVersion), &target); err != nil {
 		return false
 	}
-
 	return reflect.DeepEqual(target, item)
 }
 
