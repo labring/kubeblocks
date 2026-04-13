@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -50,6 +51,11 @@ import (
 const (
 	defaultCronExpression             = "0 18 * * *"
 	disableSyncFromTemplateAnnotation = "dataprotection.kubeblocks.io/disable-sync-from-template"
+
+	defaultRedisBackupMethod    = "datafile"
+	defaultMySQLBackupMethod    = "xtrabackup"
+	defaultMongoBackupMethod    = "dump"
+	defaultPostgresBackupMethod = "pg-basebackup"
 )
 
 // BackupPolicyDriverReconciler reconciles a BackupPolicy object
@@ -59,7 +65,7 @@ type BackupPolicyDriverReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=clusters,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=clusters/status,verbs=get
 
 // +kubebuilder:rbac:groups=dataprotection.kubeblocks.io,resources=backuppolicies,verbs=get;list;watch;create;update;patch
@@ -254,11 +260,15 @@ func (r *backupPolicyAndScheduleBuilder) transformBackupSchedule(bp *dpv1alpha1.
 		if err := controllerutil.SetControllerReference(r.Cluster, backupSchedule, r.schema); err != nil {
 			return err
 		}
-		r.mergeClusterBackup(bp, backupSchedule)
+		if err := r.mergeClusterBackup(bp, backupSchedule); err != nil {
+			return err
+		}
 		return r.Client.Create(r.Context, backupSchedule)
 	}
 	r.syncBackupSchedule(backupSchedule)
-	r.mergeClusterBackup(bp, backupSchedule)
+	if err := r.mergeClusterBackup(bp, backupSchedule); err != nil {
+		return err
+	}
 	return r.Client.Update(r.Context, backupSchedule)
 }
 
@@ -558,7 +568,7 @@ func (r *backupPolicyAndScheduleBuilder) buildBackupTarget(
 func (r *backupPolicyAndScheduleBuilder) mergeClusterBackup(
 	backupPolicy *dpv1alpha1.BackupPolicy,
 	backupSchedule *dpv1alpha1.BackupSchedule,
-) *dpv1alpha1.BackupSchedule {
+) error {
 	backupEnabled := func() bool {
 		return r.Cluster.Spec.Backup != nil && boolValue(r.Cluster.Spec.Backup.Enabled)
 	}
@@ -568,16 +578,34 @@ func (r *backupPolicyAndScheduleBuilder) mergeClusterBackup(
 			r.EventRecorder.Event(r.Cluster, corev1.EventTypeWarning,
 				"BackupPolicyNotFound", "backup policy is nil, can not enable cluster backup")
 		}
-		return backupSchedule
+		return nil
 	}
 
 	backup := r.Cluster.Spec.Backup
+	if backup.Method == "" {
+		if m := r.defaultBackupMethod(backupPolicy); m != "" {
+			patchBase := r.Cluster.DeepCopy()
+			backup.Method = m
+			patch := client.MergeFrom(patchBase)
+			if err := r.Client.Patch(r.Context, r.Cluster, patch); err != nil {
+				return err
+			}
+			r.V(1).Info("backup method not set, defaulting",
+				"cluster", r.Cluster.Name, "component", r.componentName, "method", m)
+		}
+	}
+
 	method := dputils.GetBackupMethodByName(backup.Method, backupPolicy)
 	// the specified backup method should be in the backup policy, if not, record event and return.
 	if method == nil {
-		r.EventRecorder.Event(r.Cluster, corev1.EventTypeWarning,
-			"BackupMethodNotFound", fmt.Sprintf("backup method %s is not found in backup policy", backup.Method))
-		return backupSchedule
+		if backupEnabled() {
+			message := fmt.Sprintf("backup method %s is not found in backup policy", backup.Method)
+			if backup.Method == "" {
+				message = "backup method is not set and no default backup method is available in backup policy"
+			}
+			r.EventRecorder.Event(r.Cluster, corev1.EventTypeWarning, "BackupMethodNotFound", message)
+		}
+		return nil
 	}
 
 	// there is no backup schedule created by backup policy template, so we need to
@@ -684,7 +712,78 @@ func (r *backupPolicyAndScheduleBuilder) mergeClusterBackup(
 		}
 		backupSchedule.Spec.Schedules = append(backupSchedule.Spec.Schedules, *sp)
 	}
-	return backupSchedule
+	return nil
+}
+
+func (r *backupPolicyAndScheduleBuilder) defaultBackupMethod(backupPolicy *dpv1alpha1.BackupPolicy) string {
+	if method := r.defaultBackupMethodByServiceKind(); method != "" && hasBackupMethodInPolicy(backupPolicy, method) {
+		return method
+	}
+	if method := defaultBackupMethodByCompDefName(r.compSpec.ComponentDef); method != "" && hasBackupMethodInPolicy(backupPolicy, method) {
+		return method
+	}
+	for _, method := range []string{
+		defaultRedisBackupMethod,
+		defaultMySQLBackupMethod,
+		defaultMongoBackupMethod,
+		defaultPostgresBackupMethod,
+	} {
+		if hasBackupMethodInPolicy(backupPolicy, method) {
+			return method
+		}
+	}
+	return ""
+}
+
+func (r *backupPolicyAndScheduleBuilder) defaultBackupMethodByServiceKind() string {
+	compDef := &appsv1.ComponentDefinition{}
+	if err := r.Client.Get(r.Context, client.ObjectKey{Name: r.compSpec.ComponentDef}, compDef); err != nil {
+		log.FromContext(r.Context).V(1).Info("failed to get ComponentDefinition while determining default backup method by service kind",
+			"componentDefinition", r.compSpec.ComponentDef,
+			"error", err)
+		return ""
+	}
+	sk := strings.ToLower(compDef.Spec.ServiceKind)
+	switch sk {
+	case "redis":
+		return defaultRedisBackupMethod
+	case "mysql", "wesql":
+		return defaultMySQLBackupMethod
+	case "mongodb", "mongo":
+		return defaultMongoBackupMethod
+	case "postgresql", "postgres", "vanilla-postgresql", "apecloud-postgresql":
+		return defaultPostgresBackupMethod
+	default:
+		return ""
+	}
+}
+
+func defaultBackupMethodByCompDefName(compDefName string) string {
+	name := strings.ToLower(compDefName)
+	switch {
+	case strings.Contains(name, "redis"):
+		return defaultRedisBackupMethod
+	case strings.Contains(name, "mongo"):
+		return defaultMongoBackupMethod
+	case strings.Contains(name, "mysql"), strings.Contains(name, "wesql"):
+		return defaultMySQLBackupMethod
+	case strings.Contains(name, "postgres"), strings.Contains(name, "pg"):
+		return defaultPostgresBackupMethod
+	default:
+		return ""
+	}
+}
+
+func hasBackupMethodInPolicy(backupPolicy *dpv1alpha1.BackupPolicy, method string) bool {
+	if backupPolicy == nil || method == "" {
+		return false
+	}
+	for _, m := range backupPolicy.Spec.BackupMethods {
+		if m.Name == method {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *backupPolicyAndScheduleBuilder) buildAnnotations() map[string]string {

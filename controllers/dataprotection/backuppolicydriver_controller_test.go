@@ -381,5 +381,38 @@ var _ = Describe("BackupPolicyDriver Controller test", func() {
 				Eventually(testapps.CheckObj(&testCtx, backupScheduleKey, checkSchedule)).Should(Succeed())
 			}
 		})
+
+		It("defaults empty backup method on cluster spec when backup is enabled", func() {
+			boolTrue := true
+			retention := dpv1alpha1.RetentionPeriod("1d")
+			int64Ten := int64(10)
+			createClusterWithBackup(&appsv1.ClusterBackup{
+				Enabled:                 &boolTrue,
+				RetentionPeriod:         retention,
+				Method:                  "",
+				CronExpression:          "*/1 * * * *",
+				StartingDeadlineMinutes: &int64Ten,
+				PITREnabled:             &boolTrue,
+				RepoName:                backupRepoName,
+			})
+
+			Eventually(testapps.CheckObj(&testCtx, clusterKey, func(g Gomega, cl *appsv1.Cluster) {
+				g.Expect(cl.Spec.Backup).ShouldNot(BeNil())
+				g.Expect(cl.Spec.Backup.Method).Should(Equal(testdp.BackupMethodName))
+			})).Should(Succeed())
+
+			backupScheduleName := generateBackupScheduleName(clusterKey.Name, defaultCompName)
+			backupScheduleKey := client.ObjectKey{Name: backupScheduleName, Namespace: clusterKey.Namespace}
+			Eventually(testapps.CheckObj(&testCtx, backupScheduleKey, func(g Gomega, schedule *dpv1alpha1.BackupSchedule) {
+				var found bool
+				for i := range schedule.Spec.Schedules {
+					if schedule.Spec.Schedules[i].BackupMethod == testdp.BackupMethodName {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).Should(BeTrue())
+			})).Should(Succeed())
+		})
 	})
 })
