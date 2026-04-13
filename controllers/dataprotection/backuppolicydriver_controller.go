@@ -738,6 +738,9 @@ func (r *backupPolicyAndScheduleBuilder) defaultBackupMethod(backupPolicy *dpv1a
 func (r *backupPolicyAndScheduleBuilder) defaultBackupMethodByServiceKind() string {
 	compDef := &appsv1.ComponentDefinition{}
 	if err := r.Client.Get(r.Context, client.ObjectKey{Name: r.compSpec.ComponentDef}, compDef); err != nil {
+		log.FromContext(r.Context).V(1).Info("failed to get ComponentDefinition while determining default backup method by service kind",
+			"componentDefinition", r.compSpec.ComponentDef,
+			"error", err)
 		return ""
 	}
 	sk := strings.ToLower(compDef.Spec.ServiceKind)
