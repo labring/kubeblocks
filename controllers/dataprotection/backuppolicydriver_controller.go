@@ -598,8 +598,13 @@ func (r *backupPolicyAndScheduleBuilder) mergeClusterBackup(
 	method := dputils.GetBackupMethodByName(backup.Method, backupPolicy)
 	// the specified backup method should be in the backup policy, if not, record event and return.
 	if method == nil {
-		r.EventRecorder.Event(r.Cluster, corev1.EventTypeWarning,
-			"BackupMethodNotFound", fmt.Sprintf("backup method %s is not found in backup policy", backup.Method))
+		if backupEnabled() {
+			message := fmt.Sprintf("backup method %s is not found in backup policy", backup.Method)
+			if backup.Method == "" {
+				message = "backup method is not set and no default backup method is available in backup policy"
+			}
+			r.EventRecorder.Event(r.Cluster, corev1.EventTypeWarning, "BackupMethodNotFound", message)
+		}
 		return nil
 	}
 
