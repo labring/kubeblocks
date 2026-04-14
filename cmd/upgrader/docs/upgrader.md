@@ -284,6 +284,7 @@ type Step interface {
      - `mysql`
      - `psql`
      - `redis-cli`
+     - `mongosh`
      - `instancesets` / `configurations` CRD
 
 11. `fix_redis_and_wait`
@@ -392,6 +393,5 @@ type Step interface {
 
 5. `scripts/` 目录
    - 默认都应重审，必要时重写
-
 
 

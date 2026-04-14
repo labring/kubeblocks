@@ -100,6 +100,7 @@ func (s *PreflightDBFix) Run(opts RunOptions) error {
 	check("mysql 客户端未安装（验证 MySQL 需要）", "mysql", "--version")
 	check("psql 客户端未安装（验证 PostgreSQL 需要）", "psql", "--version")
 	check("redis-cli 未安装（验证 Redis 需要）", "redis-cli", "--version")
+	check("mongosh 客户端未安装（验证 MongoDB 需要）", "mongosh", "--version")
 
 	for _, crd := range []string{
 		"instancesets.workloads.kubeblocks.io",
