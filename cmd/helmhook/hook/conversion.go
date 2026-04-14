@@ -62,7 +62,7 @@ func (p *Conversion) Handle(ctx *UpgradeContext) (err error) {
 }
 
 func matchVersion(meta ConversionMeta, oldVersion Version, newVersion Version) bool {
-	if meta.ToVersion != newVersion {
+	if meta.ToVersion == newVersion {
 		return false
 	}
 	for _, version := range meta.FromVersion {

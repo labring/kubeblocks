@@ -66,9 +66,6 @@ func deleteDeployment(ctx context.Context, client *kubernetes.Clientset, ns, com
 	if err != nil {
 		return err
 	}
-	if deploy == nil {
-		return nil
-	}
 
 	// before delete deployment, output the deployment yaml, if deployment was deleted
 	// by mistake, we can recover it by apply the yaml.
@@ -141,13 +138,9 @@ func NewVersion(version string) (*Version, error) {
 	}
 
 	major, err := strconv.ParseInt(vs[0], 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid version %q: %w", version, err)
-	}
+	CheckErr(err)
 	minor, err := strconv.ParseInt(vs[1], 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid version %q: %w", version, err)
-	}
+	CheckErr(err)
 	return &Version{
 		Major: int32(major),
 		Minor: int32(minor),

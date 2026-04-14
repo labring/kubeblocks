@@ -22,6 +22,7 @@ package operations
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +33,6 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
-
 
 type upgradeOpsHandler struct{}
 
@@ -53,7 +53,7 @@ func init() {
 
 // ActionStartedCondition the started condition when handle the upgrade request.
 func (u upgradeOpsHandler) ActionStartedCondition(reqCtx intctrlutil.RequestCtx, cli client.Client, opsRes *OpsResource) (*metav1.Condition, error) {
-	return appsv1alpha1.NewUpgradingCondition(opsRes.OpsRequest), nil
+	return appsv1alpha1.NewHorizontalScalingCondition(opsRes.OpsRequest), nil
 }
 
 // Action modifies Cluster.spec.clusterVersionRef with opsRequest.spec.upgrade.clusterVersionRef
@@ -219,31 +219,21 @@ func (u upgradeOpsHandler) podImageApplied(pod *corev1.Pod, expectContainers []c
 	if len(expectContainers) == 0 {
 		return true
 	}
-	// Build lookup maps for O(1) access.
-	statusMap := make(map[string]string, len(pod.Status.ContainerStatuses))
-	for _, cs := range pod.Status.ContainerStatuses {
-		statusMap[cs.Name] = cs.Image
-	}
-	specMap := make(map[string]string, len(pod.Spec.Containers))
-	for _, c := range pod.Spec.Containers {
-		specMap[c.Name] = c.Image
+	imageName := func(image string) string {
+		images := strings.Split(image, "/")
+		return images[len(images)-1]
 	}
 	for _, v := range expectContainers {
-		// Prefer ContainerStatus (reflects running image); fall back to Spec.
-		if img, ok := statusMap[v.Name]; ok {
-			if img != v.Image {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name == v.Name && imageName(cs.Image) != imageName(v.Image) {
 				return false
 			}
-			continue
 		}
-		if img, ok := specMap[v.Name]; ok {
-			if img != v.Image {
+		for _, c := range pod.Spec.Containers {
+			if c.Name == v.Name && imageName(c.Image) != imageName(v.Image) {
 				return false
 			}
-			continue
 		}
-		// Container not found in pod at all — pod hasn't been updated yet.
-		return false
 	}
 	return true
 }
