@@ -35,6 +35,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/lorry/dcs"
 	"github.com/apecloud/kubeblocks/pkg/lorry/engines"
 )
@@ -103,7 +104,46 @@ func NewManager(properties engines.Properties) (engines.DBManager, error) {
 }
 
 func (mgr *Manager) InitializeCluster(ctx context.Context, cluster *dcs.Cluster) error {
-	return mgr.InitiateReplSet(ctx, cluster)
+	err := mgr.InitiateReplSet(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	// After rs.initiate(), reconnect mgr.Client because the Go driver's topology
+	// monitor cached the server as Unknown (no RS config existed at connection time).
+	mgr.Logger.Info("RS initialized, reconnecting auth client")
+	if reconnErr := mgr.reconnectClient(ctx); reconnErr != nil {
+		mgr.Logger.Info("Failed to reconnect auth client after RS init", "error", reconnErr)
+		// Non-fatal: the background monitor will eventually rediscover
+	}
+	return nil
+}
+
+// reconnectClient disconnects and reconnects mgr.Client to refresh topology state.
+// This is needed after RS initialization or credential changes, because the Go
+// driver caches topology state and won't re-evaluate until the next heartbeat.
+func (mgr *Manager) reconnectClient(ctx context.Context) error {
+	if mgr.Client != nil {
+		_ = mgr.Client.Disconnect(ctx)
+	}
+
+	opts := options.Client().
+		SetHosts(config.Hosts).
+		SetReplicaSet(config.ReplSetName).
+		SetAuth(options.Credential{
+			Password: config.Password,
+			Username: config.Username,
+		}).
+		SetWriteConcern(writeconcern.New(writeconcern.WMajority(), writeconcern.J(true))).
+		SetReadPreference(readpref.Primary()).
+		SetDirect(config.Direct)
+
+	client, err := mongo.Connect(ctx, opts)
+	if err != nil {
+		return errors.Wrap(err, "reconnect to mongodb")
+	}
+	mgr.Client = client
+	mgr.Database = client.Database(config.DatabaseName)
+	return nil
 }
 
 // InitiateReplSet is a method to create MongoDB cluster
@@ -142,9 +182,26 @@ func (mgr *Manager) InitiateReplSet(ctx context.Context, cluster *dcs.Cluster) e
 
 // IsClusterInitialized is a method to check if cluster is initialized or not
 func (mgr *Manager) IsClusterInitialized(ctx context.Context, cluster *dcs.Cluster) (bool, error) {
+	// For the first member, check local connections first.
+	// This avoids the timeout from GetReplSetClient() which creates a client with
+	// SetReplicaSet() - the Go driver marks servers as Unknown when no RS config
+	// exists (e.g., after backup restore), causing indefinite timeouts.
+	if mgr.IsFirstMember() {
+		initialized, err := mgr.isClusterInitializedLocal(ctx)
+		if err == nil {
+			return initialized, nil
+		}
+		mgr.Logger.Info("Local initialization check failed, falling back to replset client", "error", err)
+	}
+
 	client, err := mgr.GetReplSetClient(ctx, cluster)
 	if err != nil {
-		mgr.Logger.Info("Get leader client failed", "error", err)
+		mgr.Logger.Info("Get replset client failed", "error", err)
+		// If replset client also fails and we are the first member,
+		// return the local check result instead of blocking.
+		if mgr.IsFirstMember() {
+			return false, nil
+		}
 		return false, err
 	}
 	defer client.Disconnect(ctx) //nolint:errcheck
@@ -155,40 +212,57 @@ func (mgr *Manager) IsClusterInitialized(ctx context.Context, cluster *dcs.Clust
 	if rsStatus != nil {
 		return rsStatus.Set != "", nil
 	}
-	mgr.Logger.Info("Get replSet status failed", "error", err)
+	mgr.Logger.Info("Get replSet status via replset client failed", "error", err)
 
 	if !mgr.IsFirstMember() {
 		return false, nil
 	}
+	return false, nil
+}
 
-	client, err = NewLocalUnauthClient(ctx)
+// isClusterInitializedLocal checks RS initialization status using local connections.
+// This works even when the authenticated replset client can't connect (e.g., after
+// backup restore with mismatched credentials or uninitialized RS).
+func (mgr *Manager) isClusterInitializedLocal(ctx context.Context) (bool, error) {
+	// Try unauthenticated local client first
+	unauthClient, err := NewLocalUnauthClient(ctx)
 	if err != nil {
 		mgr.Logger.Info("Get local unauth client failed", "error", err)
 		return false, err
 	}
-	defer client.Disconnect(ctx) //nolint:errcheck
+	defer unauthClient.Disconnect(ctx) //nolint:errcheck
 
-	rsStatus, err = GetReplSetStatus(ctx, client)
+	rsStatus, err := GetReplSetStatus(ctx, unauthClient)
 	if rsStatus != nil {
 		return rsStatus.Set != "", nil
 	}
 
 	err = errors.Cause(err)
 	if cmdErr, ok := err.(mongo.CommandError); ok && cmdErr.Name == "NotYetInitialized" {
+		mgr.Logger.Info("Cluster is not yet initialized (detected via unauth client)")
 		return false, nil
 	}
+	// When restored from backup, old users exist but RS is not initialized.
+	// The unauth client gets "Unauthorized" because localhostAuthBypass is blocked
+	// by existing users. In this case, try the auth client.
+	if cmdErr, ok := err.(mongo.CommandError); ok && cmdErr.Name == "Unauthorized" {
+		mgr.Logger.Info("Unauth client got Unauthorized (users may exist from restore), trying auth client")
+		rsStatus, authErr := mgr.GetReplSetStatus(ctx)
+		if rsStatus != nil {
+			return rsStatus.Set != "", nil
+		}
+		if authErr != nil {
+			causedErr := errors.Cause(authErr)
+			if cmdErr, ok := causedErr.(mongo.CommandError); ok && cmdErr.Name == "NotYetInitialized" {
+				mgr.Logger.Info("Cluster is not yet initialized (detected via auth client)")
+				return false, nil
+			}
+			mgr.Logger.Info("Auth client replSet status also failed", "error", authErr)
+			return false, authErr
+		}
+	}
+
 	mgr.Logger.Info("Get replSet status with local unauth client failed", "error", err)
-
-	rsStatus, err = mgr.GetReplSetStatus(ctx)
-	if rsStatus != nil {
-		return rsStatus.Set != "", nil
-	}
-	if err != nil {
-		mgr.Logger.Info("Get replSet status with local auth client failed", "error", err)
-		return false, err
-	}
-
-	mgr.Logger.Info("Get replSet status failed", "error", err)
 	return false, err
 }
 
@@ -232,8 +306,16 @@ func (mgr *Manager) CreateRoot(ctx context.Context) error {
 
 	client, err := NewLocalUnauthClient(ctx)
 	if err != nil {
-		mgr.Logger.Info("Get local unauth client failed", "error", err)
-		return err
+		// If unauth client fails (users exist from backup, localhostAuthBypass blocked),
+		// try the auth client to update root password to match the current secret.
+		mgr.Logger.Info("Get local unauth client failed, trying auth client to update root password", "error", err.Error())
+		updateErr := UpdateUserPass(ctx, mgr.Client, config.Username, config.Password)
+		if updateErr != nil {
+			mgr.Logger.Info("Update root password with auth client also failed", "error", updateErr.Error())
+			return err
+		}
+		mgr.Logger.Info("Updated existing root user password via auth client")
+		return nil
 	}
 	defer client.Disconnect(ctx) //nolint:errcheck
 
@@ -245,11 +327,72 @@ func (mgr *Manager) CreateRoot(ctx context.Context) error {
 	mgr.Logger.Info(fmt.Sprintf("Create user: %s, passwd: %s, roles: %v", config.Username, config.Password, role))
 	err = CreateUser(ctx, client, config.Username, config.Password, role)
 	if err != nil {
-		mgr.Logger.Info("Create Root failed", "error", err)
-		return err
+		// User may already exist from backup with different password.
+		// Try to update the password instead.
+		mgr.Logger.Info("Create Root failed, trying to update existing user password", "error", err)
+		updateErr := UpdateUserPass(ctx, client, config.Username, config.Password)
+		if updateErr != nil {
+			mgr.Logger.Info("Update existing root password also failed", "error", updateErr.Error())
+			return err
+		}
+		mgr.Logger.Info("Updated existing root user password successfully")
 	}
 
 	return nil
+}
+
+func getIsMasterResp(ctx context.Context, client *mongo.Client) (*IsMasterResp, error) {
+	cur := client.Database("admin").RunCommand(ctx, bson.D{{Key: "isMaster", Value: 1}})
+	if cur.Err() != nil {
+		return nil, errors.Wrap(cur.Err(), "run isMaster")
+	}
+
+	resp := &IsMasterResp{}
+	if err := cur.Decode(resp); err != nil {
+		return nil, errors.Wrap(err, "decode isMaster response")
+	}
+	if resp.OK != 1 {
+		return nil, errors.Errorf("mongo says: %s", resp.Errmsg)
+	}
+	return resp, nil
+}
+
+func (mgr *Manager) getLocalIsMaster(ctx context.Context) (*IsMasterResp, error) {
+	client, err := NewLocalUnauthClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Disconnect(context.TODO()) //nolint:errcheck
+
+	return getIsMasterResp(ctx, client)
+}
+
+func getReplicaRoleFromIsMaster(resp *IsMasterResp) string {
+	if resp == nil {
+		return ""
+	}
+	switch {
+	case resp.IsMaster:
+		return constant.Primary
+	case resp.Secondary || resp.Primary != "":
+		return constant.Secondary
+	case resp.IsArbiter:
+		return "arbiter"
+	default:
+		return ""
+	}
+}
+
+func (mgr *Manager) getLocalReplicaRole(ctx context.Context) (string, error) {
+	resp, err := mgr.getLocalIsMaster(ctx)
+	if err != nil {
+		return "", err
+	}
+	role := getReplicaRoleFromIsMaster(resp)
+	if role == "" {
+		return "", errors.New("local isMaster did not return a replica role")
+	}
+	return role, nil
 }
 
 func (mgr *Manager) IsRunning() bool {
@@ -273,7 +416,55 @@ func (mgr *Manager) IsDBStartupReady() bool {
 
 	err := mgr.Client.Ping(ctx, readpref.Primary())
 	if err != nil {
-		mgr.Logger.Info("DB is not ready", "error", err)
+		// Authenticated ping failed. This may happen after restoring from backup
+		// where the MongoDB data has different credentials than the current secret.
+		// Fall back to an unauthenticated local connection to check if mongod is running.
+		mgr.Logger.Info("DB auth ping failed, trying unauthenticated local connection", "error", err)
+		unauthCtx, unauthCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer unauthCancel()
+		unauthClient, unauthErr := NewLocalUnauthClient(unauthCtx)
+		if unauthErr != nil {
+			mgr.Logger.Info("DB is not ready (unauth connection also failed)", "error", unauthErr)
+			return false
+		}
+		defer unauthClient.Disconnect(context.TODO()) //nolint:errcheck
+		if pingErr := unauthClient.Ping(unauthCtx, readpref.Primary()); pingErr != nil {
+			mgr.Logger.Info("DB is not ready", "error", pingErr)
+			return false
+		}
+		mgr.Logger.Info("DB is reachable via unauthenticated connection (possible credential mismatch after restore)")
+
+		// Do not mark startup ready only because mongod is listening.
+		// The restore path still needs the replica set and auth state to become usable.
+		cluster := dcs.GetStore().GetClusterFromCache()
+		if mgr.IsFirstMember() {
+			// Use a fresh context with generous timeout for recovery operations
+			// (rs.initiate + CreateRoot + reconnect can take several seconds)
+			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer recoveryCancel()
+			if fixErr := mgr.tryAutoRecoverFromRestore(recoveryCtx, cluster); fixErr != nil {
+				mgr.Logger.Info("DB auto-recovery failed during startup probe", "error", fixErr.Error())
+				return false
+			}
+		}
+
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer retryCancel()
+
+		if reconnErr := mgr.reconnectClient(retryCtx); reconnErr != nil {
+			mgr.Logger.Info("Reconnect auth client after startup recovery failed", "error", reconnErr.Error())
+		}
+		if pingErr := mgr.Client.Ping(retryCtx, readpref.Primary()); pingErr == nil {
+			mgr.DBStartupReady = true
+			mgr.Logger.Info("DB startup ready after restore recovery")
+			return true
+		}
+
+		if role, roleErr := mgr.getLocalReplicaRole(retryCtx); roleErr == nil && role != "" {
+			mgr.DBStartupReady = true
+			mgr.Logger.Info("DB startup ready after local role probe", "role", role)
+			return true
+		}
 		return false
 	}
 	mgr.DBStartupReady = true
@@ -284,6 +475,12 @@ func (mgr *Manager) IsDBStartupReady() bool {
 func (mgr *Manager) GetMemberState(ctx context.Context) (string, error) {
 	status, err := mgr.GetReplSetStatus(ctx)
 	if err != nil {
+		mgr.Logger.Info("rs.status() with auth client failed, falling back to local isMaster", "error", err.Error())
+		role, localErr := mgr.getLocalReplicaRole(ctx)
+		if localErr == nil {
+			return role, nil
+		}
+		mgr.Logger.Info("local isMaster fallback failed", "error", localErr.Error())
 		return "", errors.Wrap(err, "rs.status() failed")
 	}
 
@@ -310,6 +507,13 @@ func (mgr *Manager) IsLeaderMember(ctx context.Context, cluster *dcs.Cluster, dc
 	status, err := mgr.GetReplSetStatus(ctx)
 	if err != nil {
 		mgr.Logger.Info("rs.status() error", "error", err.Error())
+		if dcsMember == nil || memberName == mgr.CurrentMemberName || memberIP == mgr.CurrentMemberIP {
+			role, localErr := mgr.getLocalReplicaRole(ctx)
+			if localErr == nil {
+				return strings.EqualFold(role, constant.Primary), nil
+			}
+			mgr.Logger.Info("local isMaster fallback failed", "error", localErr.Error())
+		}
 		return false, err
 	}
 	for _, member := range status.Members {
