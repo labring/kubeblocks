@@ -148,7 +148,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// handle finalizers and referenced definition labels
 			&componentMetaTransformer{},
 			// validate referenced componentDefinition objects, and build synthesized component
-			&componentLoadResourcesTransformer{},
+			&componentLoadResourcesTransformer{Client: r.Client},
 			// do validation for the spec & definition consistency
 			&componentValidationTransformer{},
 			// handle sidecar container
