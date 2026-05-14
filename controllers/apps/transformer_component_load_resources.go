@@ -21,6 +21,7 @@ package apps
 
 import (
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/graph"
 	ictrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
@@ -72,16 +74,23 @@ func (t *componentLoadResourcesTransformer) Transform(ctx graph.TransformContext
 	return err
 }
 
-// isOrphanedComponent checks if the Component is orphaned by verifying its ownerReferences
-// point to the given Cluster name. If the Component has an ownerReference of kind Cluster
-// with the expected name, and that Cluster no longer exists, the Component is orphaned.
+// isOrphanedComponent checks if a Component belongs to a missing Cluster.
+// OwnerReferences are preferred, but legacy/partially-upgraded Components can lose
+// them while still carrying KubeBlocks labels and generated names.
 func isOrphanedComponent(comp *appsv1alpha1.Component, clusterName string) bool {
 	for _, ref := range comp.GetOwnerReferences() {
-		if ref.Kind == "Cluster" && ref.Name == clusterName {
+		if ref.Kind == appsv1alpha1.ClusterKind && ref.Name == clusterName {
 			return true
 		}
 	}
-	return false
+	if comp.Labels[constant.KBAppClusterUIDLabelKey] != "" {
+		return true
+	}
+	if comp.Labels[constant.KBAppComponentLabelKey] != "" && strings.HasPrefix(comp.Name, clusterName+"-") {
+		return true
+	}
+	return comp.Labels[constant.AppManagedByLabelKey] == constant.AppName &&
+		strings.HasPrefix(comp.Name, clusterName+"-")
 }
 
 // handleOrphanedComponent handles the case where a Component's parent Cluster has been deleted
