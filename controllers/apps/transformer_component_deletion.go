@@ -21,18 +21,21 @@ package apps
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/types"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
+	"github.com/apecloud/kubeblocks/apis/workloads/legacy"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
@@ -59,11 +62,13 @@ func (t *componentDeletionTransformer) Transform(ctx graph.TransformContext, dag
 	}
 	graphCli, _ := transCtx.Client.(model.GraphClient)
 	comp := transCtx.Component
+	clusterMissing := false
 	cluster, err := t.getCluster(transCtx, comp)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return newRequeueError(requeueDuration, err.Error())
 		}
+		clusterMissing = true
 		// Cluster has been deleted, use a default cluster with Delete termination policy
 		// to allow the component deletion to proceed
 		cluster = t.newDefaultCluster(comp)
@@ -79,16 +84,18 @@ func (t *componentDeletionTransformer) Transform(ctx graph.TransformContext, dag
 	}
 
 	// step2: do the pre-terminate action if needed
-	if err := component.ReconcileCompPreTerminate(reqCtx, transCtx.Client, graphCli, cluster, comp, dag); err != nil {
-		reqCtx.Log.Info("failed to reconcile component pre-terminate action", "component", comp.Name, "error", err)
-		if intctrlutil.IsTargetError(err, intctrlutil.ErrorTypeExpectedInProcess) {
-			// waiting for the preTerminate action to be done, and watch the action finish event to trigger the next reconcile
-			return nil
+	if !clusterMissing {
+		if err := component.ReconcileCompPreTerminate(reqCtx, transCtx.Client, graphCli, cluster, comp, dag); err != nil {
+			reqCtx.Log.Info("failed to reconcile component pre-terminate action", "component", comp.Name, "error", err)
+			if intctrlutil.IsTargetError(err, intctrlutil.ErrorTypeExpectedInProcess) {
+				// waiting for the preTerminate action to be done, and watch the action finish event to trigger the next reconcile
+				return nil
+			}
+			if intctrlutil.IsTargetError(err, intctrlutil.ErrorTypeRequeue) {
+				return newRequeueError(time.Second*1, "request to requeue the component pre-terminate action")
+			}
+			return err
 		}
-		if intctrlutil.IsTargetError(err, intctrlutil.ErrorTypeRequeue) {
-			return newRequeueError(time.Second*1, "request to requeue the component pre-terminate action")
-		}
-		return err
 	}
 
 	// step3: delete the sub-resources
@@ -108,7 +115,11 @@ func (t *componentDeletionTransformer) Transform(ctx graph.TransformContext, dag
 // handleCompDeleteWhenScaleIn handles the component deletion when scale-in, this scenario will delete all the sub-resources owned by the component by default.
 func (t *componentDeletionTransformer) handleCompDeleteWhenScaleIn(transCtx *componentTransformContext, graphCli model.GraphClient,
 	dag *graph.DAG, comp *appsv1alpha1.Component, matchLabels map[string]string) error {
-	return t.deleteCompResources(transCtx, graphCli, dag, comp, matchLabels, kindsForCompWipeOut())
+	toDeleteKinds, err := compDeleteKindsWithLegacyRSM(transCtx, graphCli, kindsForCompWipeOut())
+	if err != nil {
+		return err
+	}
+	return t.deleteCompResources(transCtx, graphCli, dag, comp, matchLabels, toDeleteKinds)
 }
 
 // handleCompDeleteWhenClusterDelete handles the component deletion when the cluster is being deleted, the sub-resources owned by the component depends on the cluster's TerminationPolicy.
@@ -121,6 +132,11 @@ func (t *componentDeletionTransformer) handleCompDeleteWhenClusterDelete(transCt
 	case appsv1alpha1.WipeOut:
 		toDeleteKinds = kindsForCompWipeOut()
 	}
+	var err error
+	toDeleteKinds, err = compDeleteKindsWithLegacyRSM(transCtx, graphCli, toDeleteKinds)
+	if err != nil {
+		return err
+	}
 
 	return t.deleteCompResources(transCtx, graphCli, dag, comp, matchLabels, toDeleteKinds)
 }
@@ -131,6 +147,13 @@ func (t *componentDeletionTransformer) deleteCompResources(transCtx *componentTr
 	snapshot, err := model.ReadCacheSnapshot(transCtx, comp, matchLabels, toDeleteKinds...)
 	if err != nil {
 		return newRequeueError(requeueDuration, err.Error())
+	}
+	dependents, err := readCompOwnedObjects(transCtx, comp, toDeleteKinds...)
+	if err != nil {
+		return newRequeueError(requeueDuration, err.Error())
+	}
+	for key, object := range dependents {
+		snapshot[key] = object
 	}
 	if len(snapshot) > 0 {
 		// delete the sub-resources owned by the component before deleting the component
@@ -181,6 +204,45 @@ func (t *componentDeletionTransformer) newDefaultCluster(comp *appsv1alpha1.Comp
 	}
 }
 
+func readCompOwnedObjects(transCtx *componentTransformContext, comp *appsv1alpha1.Component, kinds ...client.ObjectList) (model.ObjectSnapshot, error) {
+	snapshot := make(model.ObjectSnapshot)
+	for _, list := range kinds {
+		if err := transCtx.GetClient().List(transCtx.GetContext(), list, client.InNamespace(comp.Namespace)); err != nil {
+			if model.IsPolicyV1DiscoveryNotFoundError(err) {
+				continue
+			}
+			return nil, err
+		}
+		items := reflect.ValueOf(list).Elem().FieldByName("Items")
+		if !items.IsValid() {
+			return nil, fmt.Errorf("ObjectList has no Items field: %s", list.GetObjectKind().GroupVersionKind().String())
+		}
+		for i := 0; i < items.Len(); i++ {
+			object := items.Index(i).Addr().Interface().(client.Object)
+			if !model.IsOwnerOf(comp, object) {
+				continue
+			}
+			key, err := model.GetGVKName(object)
+			if err != nil {
+				return nil, err
+			}
+			snapshot[*key] = object
+		}
+	}
+	return snapshot, nil
+}
+
+func compDeleteKindsWithLegacyRSM(transCtx *componentTransformContext, graphCli model.GraphClient, kinds []client.ObjectList) ([]client.ObjectList, error) {
+	exists, err := legacyCRDExists(transCtx.Context, graphCli)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		kinds = append(kinds, &legacy.ReplicatedStateMachineList{})
+	}
+	return kinds, nil
+}
+
 func compOwnedKinds() []client.ObjectList {
 	return []client.ObjectList{
 		&workloads.InstanceSetList{},
@@ -191,6 +253,7 @@ func compOwnedKinds() []client.ObjectList {
 		&dpv1alpha1.RestoreList{},
 		&dpv1alpha1.BackupList{},
 		&appsv1alpha1.ConfigurationList{},
+		&policyv1.PodDisruptionBudgetList{},
 	}
 }
 

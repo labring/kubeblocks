@@ -93,6 +93,9 @@ type ComponentReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets/finalizers,verbs=update
+
 // read only + watch access
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 
