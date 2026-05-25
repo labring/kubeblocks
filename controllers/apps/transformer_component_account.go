@@ -58,7 +58,7 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 	synthesizeComp := transCtx.SynthesizeComponent
 	graphCli, _ := transCtx.Client.(model.GraphClient)
 
-	if err := t.ensureLegacyMongoRootSecret(transCtx, synthesizeComp, graphCli, dag); err != nil {
+	if err := t.ensureGeneratedMongoRootSecret(transCtx, synthesizeComp, graphCli, dag); err != nil {
 		return err
 	}
 
@@ -73,7 +73,7 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 		}
 		if secret == nil {
 			if existSecret == nil {
-				t.emitMissingInitAccountSecretEvent(transCtx, synthesizeComp, account)
+				t.emitMissingAccountPasswordEvent(transCtx, synthesizeComp, account)
 			}
 			continue
 		}
@@ -94,7 +94,10 @@ func (t *componentAccountTransformer) Transform(ctx graph.TransformContext, dag 
 	return nil
 }
 
-func (t *componentAccountTransformer) ensureLegacyMongoRootSecret(
+// ensureGeneratedMongoRootSecret creates the v0.9 account-root compatibility secret for
+// generated Mongo components that do not carry root in SystemAccounts. The password is
+// resolved through the normal account path, including restore and legacy conn-credential fallback.
+func (t *componentAccountTransformer) ensureGeneratedMongoRootSecret(
 	transCtx *componentTransformContext,
 	synthesizeComp *component.SynthesizedComponent,
 	graphCli model.GraphClient,
@@ -120,6 +123,12 @@ func (t *componentAccountTransformer) ensureLegacyMongoRootSecret(
 	rootAccount := appsv1alpha1.SystemAccount{
 		Name:        "root",
 		InitAccount: true,
+		PasswordGenerationPolicy: appsv1alpha1.PasswordConfig{
+			Length:     16,
+			NumDigits:  4,
+			NumSymbols: 0,
+			LetterCase: appsv1alpha1.MixedCases,
+		},
 	}
 	existSecret, err := t.checkAccountSecretExist(transCtx, synthesizeComp, rootAccount)
 	if err != nil {
@@ -129,20 +138,10 @@ func (t *componentAccountTransformer) ensureLegacyMongoRootSecret(
 		return nil
 	}
 
-	var password []byte
-	if transCtx.Cluster != nil {
-		if restorePwd := factory.GetRestorePassword(transCtx.Cluster, synthesizeComp); restorePwd != "" {
-			password = []byte(restorePwd)
-		}
+	secret, err := t.buildAccountSecret(transCtx, synthesizeComp, rootAccount)
+	if err != nil {
+		return err
 	}
-	if len(password) == 0 {
-		password = t.getLegacyConnCredentialPassword(transCtx)
-	}
-	if len(password) == 0 {
-		t.emitMissingInitAccountSecretEvent(transCtx, synthesizeComp, rootAccount)
-		return nil
-	}
-	secret := t.buildAccountSecretWithPassword(synthesizeComp, rootAccount, password)
 	graphCli.Create(dag, secret, inUniversalContext4G())
 	return nil
 }
@@ -203,29 +202,23 @@ func (t *componentAccountTransformer) buildPassword(ctx *componentTransformConte
 	// get restore password if exists during recovery.
 	password := factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent.Annotations, ctx.SynthesizeComponent.Name, account.Name)
 	if account.InitAccount && password == "" {
-		if strings.EqualFold(account.Name, "root") && t.isMongoComponent(ctx) {
-			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
-			if password != "" {
-				return []byte(password), true
-			}
-			if legacyPwd := t.getLegacyConnCredentialPassword(ctx); len(legacyPwd) > 0 {
-				ctx.V(1).Info("using legacy conn-credential password for init account",
-					"component", ctx.SynthesizeComponent.Name, "account", account.Name)
-				return legacyPwd, true
-			}
-			return nil, false
-		} else {
-			// initAccount can also restore from factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent, account).
-			// This is compatibility processing.
-			password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
-		}
+		// initAccount can also restore from factory.GetRestoreSystemAccountPassword(ctx.SynthesizeComponent, account).
+		// This is compatibility processing.
+		password = factory.GetRestorePassword(ctx.Cluster, synthesizeComp)
 	}
 	// Try to get password from legacy conn-credential secret for backward compatibility (0.8 -> 0.9 upgrade).
 	if account.InitAccount && password == "" {
 		password = t.getPasswordFromLegacySecret(ctx)
 	}
 	if password == "" {
-		return t.generatePassword(account), true
+		if !hasPasswordGenerationPolicy(account.PasswordGenerationPolicy) {
+			return nil, false
+		}
+		generated := t.generatePassword(account)
+		if len(generated) == 0 {
+			return nil, false
+		}
+		return generated, true
 	}
 	return []byte(password), true
 }
@@ -257,31 +250,17 @@ func (t *componentAccountTransformer) isMongoComponent(ctx *componentTransformCo
 	return false
 }
 
-func (t *componentAccountTransformer) getLegacyConnCredentialPassword(ctx *componentTransformContext) []byte {
-	if ctx == nil || ctx.Cluster == nil {
-		return nil
-	}
-	secretKey := types.NamespacedName{
-		Namespace: ctx.Cluster.Namespace,
-		Name:      constant.GenerateDefaultConnCredential(ctx.Cluster.Name),
-	}
-	secret := &corev1.Secret{}
-	if err := ctx.Client.Get(ctx.Context, secretKey, secret); err != nil {
-		return nil
-	}
-	if pwd, ok := secret.Data[constant.AccountPasswdForSecret]; ok && len(pwd) > 0 {
-		return pwd
-	}
-	return nil
+func hasPasswordGenerationPolicy(config appsv1alpha1.PasswordConfig) bool {
+	return config.Length > 0
 }
 
-func (t *componentAccountTransformer) emitMissingInitAccountSecretEvent(ctx *componentTransformContext, synthesizeComp *component.SynthesizedComponent, account appsv1alpha1.SystemAccount) {
+func (t *componentAccountTransformer) emitMissingAccountPasswordEvent(ctx *componentTransformContext, synthesizeComp *component.SynthesizedComponent, account appsv1alpha1.SystemAccount) {
 	if ctx == nil || ctx.EventRecorder == nil || ctx.Component == nil || synthesizeComp == nil {
 		return
 	}
 	secretName := constant.GenerateAccountSecretName(synthesizeComp.ClusterName, synthesizeComp.Name, account.Name)
-	ctx.EventRecorder.Eventf(ctx.Component, corev1.EventTypeWarning, "InitAccountSecretMissing",
-		"missing legacy conn-credential and restore password for init account, please create secret %s manually", secretName)
+	ctx.EventRecorder.Eventf(ctx.Component, corev1.EventTypeWarning, "AccountSecretMissingPassword",
+		"missing restore password, legacy conn-credential, and valid password generation policy for account, please create secret %s manually", secretName)
 }
 
 // getPasswordFromLegacySecret attempts to get password from legacy conn-credential secret.
