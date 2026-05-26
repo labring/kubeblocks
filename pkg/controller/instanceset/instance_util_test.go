@@ -350,18 +350,46 @@ var _ = Describe("instance util test", func() {
 			Expect(equalBasicInPlaceFields(pod.(*corev1.Pod), newPod)).Should(BeTrue())
 
 			By("merge pvc")
+			controller := true
 			oldPvc := builder.NewPVCBuilder(namespace, name).
 				SetResources(corev1.ResourceRequirements{Requests: map[corev1.ResourceName]resource.Quantity{
 					corev1.ResourceStorage: resource.MustParse("1G"),
 				}}).
 				GetObject()
+			oldPvc.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion: "apps.kubeblocks.io/v1alpha1",
+					Kind:       "Cluster",
+					Name:       "cluster",
+					Controller: &controller,
+				},
+				{
+					APIVersion: "apps.kubeblocks.io/v1alpha1",
+					Kind:       "Component",
+					Name:       "component",
+				},
+				{
+					APIVersion: workloads.GroupVersion.String(),
+					Kind:       workloads.Kind,
+					Name:       "instanceset",
+				},
+			}
 			newPvc := builder.NewPVCBuilder(namespace, name).
 				SetResources(corev1.ResourceRequirements{Requests: map[corev1.ResourceName]resource.Quantity{
 					corev1.ResourceStorage: resource.MustParse("2G"),
 				}}).
 				GetObject()
 			pvc := copyAndMerge(oldPvc, newPvc)
-			Expect(pvc).Should(Equal(newPvc))
+			mergedPVC, ok := pvc.(*corev1.PersistentVolumeClaim)
+			Expect(ok).Should(BeTrue())
+			Expect(mergedPVC.Spec).Should(Equal(newPvc.Spec))
+			Expect(mergedPVC.OwnerReferences).Should(Equal([]metav1.OwnerReference{
+				{
+					APIVersion: workloads.GroupVersion.String(),
+					Kind:       workloads.Kind,
+					Name:       "instanceset",
+				},
+			}))
 
 			By("merge other kind(secret)")
 			oldSecret := builder.NewSecretBuilder(namespace, name).

@@ -26,8 +26,10 @@ import (
 	"strconv"
 	"strings"
 
+	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -71,25 +73,10 @@ func ReadObjectTree[T client.Object](ctx context.Context, reader client.Reader, 
 		for i := 0; i < l; i++ {
 			// get the underlying object
 			object := items.Index(i).Addr().Interface().(client.Object)
-			// For PVCs owned by Component (after KubeBlocks upgrade), we should include them
-			// and clear the ownerReference since PVCs should not have Component as owner.
-			// This fixes the upgrade leftover issue where some PVCs still have ownerReference
-			// pointing to Component, causing TreeLoader to skip them.
-			shouldInclude := model.IsOwnerOf(root, object)
-			if !shouldInclude {
-				if pvc, isPVC := object.(*corev1.PersistentVolumeClaim); isPVC {
-					// Check if PVC is owned by Component - include it but DON'T clear ownerReference here
-					// The clearing will happen in copyAndMergePVC during reconciliation
-					for _, ref := range pvc.GetOwnerReferences() {
-						if ref.Kind == "Component" && strings.HasPrefix(ref.APIVersion, "apps.kubeblocks.io/") {
-							fmt.Printf("[PVC-FIX-LOADER] Found PVC %s/%s with Component owner %s, including in tree\n",
-								pvc.Namespace, pvc.Name, ref.Name)
-							shouldInclude = true
-							break
-						}
-					}
-				}
-			}
+			// PVCs left with KubeBlocks app-level ownerReferences should still
+			// be loaded so reconciliation can strip the stale ownerReference
+			// instead of trying to recreate the PVC.
+			shouldInclude := model.IsOwnerOf(root, object) || isPVCWithStaleAppsOwnerReference(object)
 			if len(object.GetOwnerReferences()) > 0 && !shouldInclude {
 				continue
 			}
@@ -100,6 +87,28 @@ func ReadObjectTree[T client.Object](ctx context.Context, reader client.Reader, 
 	}
 
 	return tree, nil
+}
+
+func isPVCWithStaleAppsOwnerReference(object client.Object) bool {
+	pvc, ok := object.(*corev1.PersistentVolumeClaim)
+	if !ok {
+		return false
+	}
+	for _, ref := range pvc.GetOwnerReferences() {
+		if isStaleAppsOwnerReference(ref) {
+			return true
+		}
+	}
+	return false
+}
+
+func isStaleAppsOwnerReference(ref metav1.OwnerReference) bool {
+	switch ref.Kind {
+	case appsv1alpha1.ComponentKind, appsv1alpha1.ClusterKind:
+		return strings.HasPrefix(ref.APIVersion, "apps.kubeblocks.io/")
+	default:
+		return false
+	}
 }
 
 func placement(obj client.Object) string {
