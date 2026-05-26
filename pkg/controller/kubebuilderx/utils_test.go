@@ -28,6 +28,7 @@ import (
 	"github.com/golang/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -82,6 +83,59 @@ var _ = Describe("utils test", func() {
 				Expect(err).Should(BeNil())
 				Expect(obj).Should(Equal(pod))
 			}
+		})
+
+		It("includes PVCs with stale KubeBlocks app ownerReferences", func() {
+			controller, k8sMock := testutil.SetupK8sMock()
+			defer controller.Finish()
+
+			root := builder.NewStatefulSetBuilder(namespace, name).GetObject()
+			clusterOwnedPVC := builder.NewPVCBuilder(namespace, "data-"+name+"-0").GetObject()
+			clusterOwnedPVC.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: "apps.kubeblocks.io/v1alpha1",
+				Kind:       "Cluster",
+				Name:       "cluster",
+			}}
+			componentOwnedPVC := builder.NewPVCBuilder(namespace, "data-"+name+"-1").GetObject()
+			componentOwnedPVC.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: "apps.kubeblocks.io/v1alpha1",
+				Kind:       "Component",
+				Name:       "component",
+			}}
+			otherOwnedPVC := builder.NewPVCBuilder(namespace, "data-"+name+"-2").GetObject()
+			otherOwnedPVC.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: "batch/v1",
+				Kind:       "Job",
+				Name:       "job",
+			}}
+
+			k8sMock.EXPECT().
+				Get(gomock.Any(), gomock.Any(), &appsv1.StatefulSet{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, objKey client.ObjectKey, obj *appsv1.StatefulSet, _ ...client.GetOption) error {
+					*obj = *root
+					return nil
+				}).Times(1)
+			k8sMock.EXPECT().
+				List(gomock.Any(), &corev1.PersistentVolumeClaimList{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, list *corev1.PersistentVolumeClaimList, _ ...client.ListOption) error {
+					Expect(list).ShouldNot(BeNil())
+					list.Items = []corev1.PersistentVolumeClaim{*clusterOwnedPVC, *componentOwnedPVC, *otherOwnedPVC}
+					return nil
+				}).Times(1)
+
+			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(root)}
+			ml := client.MatchingLabels{"foo": "bar"}
+			tree, err := ReadObjectTree[*appsv1.StatefulSet](context.Background(), k8sMock, req, ml, &corev1.PersistentVolumeClaimList{})
+			Expect(err).Should(BeNil())
+			Expect(tree.GetSecondaryObjects()).Should(HaveLen(2))
+			for _, pvc := range []*corev1.PersistentVolumeClaim{clusterOwnedPVC, componentOwnedPVC} {
+				obj, err := tree.Get(pvc)
+				Expect(err).Should(BeNil())
+				Expect(obj).Should(Equal(pvc))
+			}
+			obj, err := tree.Get(otherOwnedPVC)
+			Expect(err).Should(BeNil())
+			Expect(obj).Should(BeNil())
 		})
 	})
 })

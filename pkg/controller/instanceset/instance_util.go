@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 
+	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/klauspost/compress/zstd"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -685,13 +686,7 @@ func copyAndMerge(oldObj, newObj client.Object) client.Object {
 	copyAndMergePVC := func(oldPVC, newPVC *corev1.PersistentVolumeClaim) client.Object {
 		mergeMap(&newPVC.Annotations, &oldPVC.Annotations)
 		mergeMap(&newPVC.Labels, &oldPVC.Labels)
-
-		// Clear any ownerReference from PVC to prevent owner mismatch issues
-		if len(oldPVC.GetOwnerReferences()) > 0 {
-			fmt.Printf("[PVC-FIX] Clearing ownerReference from PVC %s/%s\n",
-				oldPVC.Namespace, oldPVC.Name)
-			oldPVC.SetOwnerReferences(nil)
-		}
+		oldPVC.SetOwnerReferences(removeStaleAppsOwnerReferences(oldPVC.GetOwnerReferences()))
 
 		// resources.request.storage and accessModes support in-place update.
 		// resources.request.storage only supports volume expansion.
@@ -727,6 +722,29 @@ func copyAndMerge(oldObj, newObj client.Object) client.Object {
 		return copyAndMergePVC(targetObj.(*corev1.PersistentVolumeClaim), o)
 	default:
 		return newObj
+	}
+}
+
+func removeStaleAppsOwnerReferences(refs []metav1.OwnerReference) []metav1.OwnerReference {
+	if len(refs) == 0 {
+		return refs
+	}
+	retained := make([]metav1.OwnerReference, 0, len(refs))
+	for _, ref := range refs {
+		if isStaleAppsOwnerReference(ref) {
+			continue
+		}
+		retained = append(retained, ref)
+	}
+	return retained
+}
+
+func isStaleAppsOwnerReference(ref metav1.OwnerReference) bool {
+	switch ref.Kind {
+	case appsv1alpha1.ComponentKind, appsv1alpha1.ClusterKind:
+		return strings.HasPrefix(ref.APIVersion, "apps.kubeblocks.io/")
+	default:
+		return false
 	}
 }
 
