@@ -185,6 +185,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			&componentPostProvisionTransformer{},
 			// update component status
 			&componentStatusTransformer{Client: r.Client},
+			// repair PostgreSQL Patroni dynamic config after failover
+			&componentPatroniDCSRepairTransformer{},
 		).Build()
 
 	// Execute stage
@@ -225,6 +227,7 @@ func (r *ComponentReconciler) setupWithManager(mgr ctrl.Manager) error {
 		Owns(&dpv1alpha1.Restore{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Owns(&batchv1.Job{}).
 		Watches(&appsv1alpha1.Configuration{}, handler.EnqueueRequestsFromMapFunc(r.configurationEventHandler))
 
@@ -257,6 +260,7 @@ func (r *ComponentReconciler) setupWithMultiClusterManager(mgr ctrl.Manager, mul
 		Watch(b, &corev1.Secret{}, eventHandler).
 		Watch(b, &corev1.ConfigMap{}, eventHandler).
 		Watch(b, &corev1.PersistentVolumeClaim{}, eventHandler).
+		Watch(b, &corev1.Pod{}, eventHandler).
 		Watch(b, &batchv1.Job{}, eventHandler).
 		Watch(b, &corev1.ServiceAccount{}, eventHandler).
 		Watch(b, &rbacv1.RoleBinding{}, eventHandler).
