@@ -105,6 +105,11 @@ func (t *componentPatroniDCSRepairTransformer) Transform(ctx graph.TransformCont
 		return intctrlutil.NewDelayedRequeueError(patroniDCSRepairRequeueInterval, err.Error())
 	}
 
+	patroniURL, err := patroniRESTURL(leaderPod.Status.PodIP, patroniRESTPort(leaderPod))
+	if err != nil {
+		t.markRepairFailed(transCtx, err)
+		return intctrlutil.NewDelayedRequeueError(patroniDCSRepairRequeueInterval, err.Error())
+	}
 	expectedPgHBA, err := t.expectedPgHBARules(transCtx)
 	if err != nil {
 		t.markRepairFailed(transCtx, err)
@@ -118,7 +123,7 @@ func (t *componentPatroniDCSRepairTransformer) Transform(ctx graph.TransformCont
 	repaired, err := repairPatroniPgHBA(
 		transCtx.Context,
 		patroniClient,
-		patroniRESTURL(leaderPod.Status.PodIP, patroniRESTPort(leaderPod)),
+		patroniURL,
 		expectedPgHBA,
 		previousPatroniDCSRepairFailed(transCtx.Component.Status.Conditions),
 	)
@@ -146,7 +151,8 @@ func isPostgreSQLComponent(transCtx *componentTransformContext) bool {
 		}
 	}
 	compDefName := strings.ToLower(transCtx.CompDef.Name)
-	return compDefName == constant.ServiceKindPostgreSQL || strings.HasPrefix(compDefName, constant.ServiceKindPostgreSQL+"-")
+	return compDefName == constant.ServiceKindPostgreSQL ||
+		strings.HasPrefix(compDefName, constant.ServiceKindPostgreSQL+"-")
 }
 
 func (t *componentPatroniDCSRepairTransformer) getLeaderPod(
@@ -178,7 +184,9 @@ func leaderMemberPodName(runningITS *workloads.InstanceSet) string {
 	return ""
 }
 
-func (t *componentPatroniDCSRepairTransformer) expectedPgHBARules(transCtx *componentTransformContext) ([]string, error) {
+func (t *componentPatroniDCSRepairTransformer) expectedPgHBARules(
+	transCtx *componentTransformContext,
+) ([]string, error) {
 	for _, configSpec := range transCtx.SynthesizeComponent.ConfigTemplates {
 		cmKey := types.NamespacedName{
 			Namespace: transCtx.Cluster.Namespace,
@@ -360,8 +368,11 @@ func normalizePgHBARules(rules []string) []string {
 	return normalized
 }
 
-func patroniRESTURL(podIP string, port int32) string {
-	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(int(port)))
+func patroniRESTURL(podIP string, port int32) (string, error) {
+	if net.ParseIP(podIP) == nil {
+		return "", fmt.Errorf("postgresql patroni dcs repair: invalid patroni pod ip %q", podIP)
+	}
+	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(int(port))), nil
 }
 
 func patroniRESTPort(pod *corev1.Pod) int32 {

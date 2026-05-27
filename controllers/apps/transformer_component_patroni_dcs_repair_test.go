@@ -164,6 +164,21 @@ func TestEnsurePgHBARemoteRules(t *testing.T) {
 	require.Contains(t, rules, "host replication all 127.0.0.1/32 md5")
 }
 
+func TestPatroniRESTURL(t *testing.T) {
+	t.Parallel()
+
+	url, err := patroniRESTURL("10.0.0.10", 8008)
+	require.NoError(t, err)
+	require.Equal(t, "http://10.0.0.10:8008", url)
+
+	url, err = patroniRESTURL("2001:db8::10", 8008)
+	require.NoError(t, err)
+	require.Equal(t, "http://[2001:db8::10]:8008", url)
+
+	_, err = patroniRESTURL("not-an-ip", 8008)
+	require.Error(t, err)
+}
+
 func TestHTTPPatroniConfigClient(t *testing.T) {
 	t.Parallel()
 
@@ -326,7 +341,10 @@ func TestComponentPatroniDCSRepairTransformer(t *testing.T) {
 	require.True(t, patroniClient.patched)
 	require.True(t, patroniClient.reloaded)
 	require.Equal(t, "http://10.0.0.10:8010", patroniClient.baseURL)
-	require.Empty(t, missingPgHBARules(patroniClient.config.PostgreSQL.PgHBA, parsePgHBAContent(configMap.Data[pgHBAConfigFile])))
+	require.Empty(t, missingPgHBARules(
+		patroniClient.config.PostgreSQL.PgHBA,
+		parsePgHBAContent(configMap.Data[pgHBAConfigFile]),
+	))
 	cond := meta.FindStatusCondition(transCtx.Component.Status.Conditions, patroniDCSRepairConditionType)
 	require.NotNil(t, cond)
 	require.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -342,10 +360,14 @@ func TestComponentPatroniDCSRepairTransformerFallbackPgHBA(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		},
 		SynthesizeComponent: &ctrlcomp.SynthesizedComponent{
-			Namespace:       "default",
-			ClusterName:     "test",
-			Name:            "postgresql",
-			ConfigTemplates: []appsv1alpha1.ComponentConfigSpec{{ComponentTemplateSpec: appsv1alpha1.ComponentTemplateSpec{Name: "postgresql-configuration"}}},
+			Namespace:   "default",
+			ClusterName: "test",
+			Name:        "postgresql",
+			ConfigTemplates: []appsv1alpha1.ComponentConfigSpec{{
+				ComponentTemplateSpec: appsv1alpha1.ComponentTemplateSpec{
+					Name: "postgresql-configuration",
+				},
+			}},
 		},
 	}
 
