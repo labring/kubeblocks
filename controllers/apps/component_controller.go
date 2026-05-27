@@ -187,6 +187,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			&componentStatusTransformer{Client: r.Client},
 			// repair PostgreSQL Patroni dynamic config after failover
 			&componentPatroniDCSRepairTransformer{},
+			// repair PostgreSQL standby password drift after replication breaks
+			&componentPostgreSQLStandbyPasswordRepairTransformer{},
 		).Build()
 
 	// Execute stage
