@@ -92,6 +92,88 @@ func TestMemberJoinEnabled(t *testing.T) {
 	})
 }
 
+func TestInjectMySQLBinlogPathCompatInitContainer(t *testing.T) {
+	t.Run("injects for ApeCloud MySQL workloads", func(t *testing.T) {
+		runningITS := newBinlogCompatTestITS("mirror.local/apecloud/apecloud-mysql-server:8.0.30", corev1.PullIfNotPresent)
+		protoITS := runningITS.DeepCopy()
+		protoITS.Spec.Template.Spec.Containers = []corev1.Container{{
+			Name:            "mysql",
+			Image:           "docker.io/apecloud/apecloud-mysql-server:latest",
+			ImagePullPolicy: corev1.PullAlways,
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:      "data",
+				MountPath: "/data/mysql/",
+			}},
+		}}
+
+		injectMySQLBinlogPathCompatInitContainer(&component.SynthesizedComponent{
+			CharacterType:  constant.MySQLCharacterType,
+			ClusterDefName: "apecloud-mysql",
+		}, runningITS, protoITS)
+
+		if len(protoITS.Spec.Template.Spec.InitContainers) != 1 {
+			t.Fatalf("expected one init container, got %d", len(protoITS.Spec.Template.Spec.InitContainers))
+		}
+		initContainer := protoITS.Spec.Template.Spec.InitContainers[0]
+		if initContainer.Name != mysqlBinlogPathCompatInitContainerName {
+			t.Fatalf("unexpected init container name: %s", initContainer.Name)
+		}
+		if initContainer.Image != "mirror.local/apecloud/apecloud-mysql-server:8.0.30" {
+			t.Fatalf("expected running image to be reused, got %s", initContainer.Image)
+		}
+		if initContainer.ImagePullPolicy != corev1.PullIfNotPresent {
+			t.Fatalf("expected running image pull policy to be reused, got %s", initContainer.ImagePullPolicy)
+		}
+		if len(initContainer.Command) != 3 || initContainer.Command[2] != mysqlBinlogPathCompatScript {
+			t.Fatalf("unexpected init command: %#v", initContainer.Command)
+		}
+		if len(initContainer.Env) != 1 || initContainer.Env[0].Name != "KB_COMPAT_MYSQL_DATA_ROOT" || initContainer.Env[0].Value != "/data/mysql" {
+			t.Fatalf("unexpected env: %#v", initContainer.Env)
+		}
+		if len(initContainer.VolumeMounts) != 1 || initContainer.VolumeMounts[0].Name != "data" || initContainer.VolumeMounts[0].MountPath != "/data/mysql" {
+			t.Fatalf("unexpected volume mounts: %#v", initContainer.VolumeMounts)
+		}
+
+		injectMySQLBinlogPathCompatInitContainer(&component.SynthesizedComponent{}, runningITS, protoITS)
+		if len(protoITS.Spec.Template.Spec.InitContainers) != 1 {
+			t.Fatalf("expected injection to be idempotent, got %d init containers", len(protoITS.Spec.Template.Spec.InitContainers))
+		}
+	})
+
+	t.Run("skips non ApeCloud MySQL workloads", func(t *testing.T) {
+		runningITS := newBinlogCompatTestITS("mysql:8.0", corev1.PullIfNotPresent)
+		protoITS := runningITS.DeepCopy()
+		protoITS.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+			Name:      "data",
+			MountPath: "/data/mysql",
+		}}
+
+		injectMySQLBinlogPathCompatInitContainer(&component.SynthesizedComponent{
+			CharacterType: constant.MySQLCharacterType,
+		}, runningITS, protoITS)
+
+		if len(protoITS.Spec.Template.Spec.InitContainers) != 0 {
+			t.Fatalf("expected no init containers, got %#v", protoITS.Spec.Template.Spec.InitContainers)
+		}
+	})
+}
+
+func newBinlogCompatTestITS(image string, pullPolicy corev1.PullPolicy) *workloads.InstanceSet {
+	return &workloads.InstanceSet{
+		Spec: workloads.InstanceSetSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            "mysql",
+						Image:           image,
+						ImagePullPolicy: pullPolicy,
+					}},
+				},
+			},
+		},
+	}
+}
+
 func TestDetectPodsToMemberJoin(t *testing.T) {
 	t.Run("no leader present", func(t *testing.T) {
 		op := newMemberJoinOps(3, []workloads.MemberStatus{{PodName: "pod-0"}}, "pod-0", "pod-1")
