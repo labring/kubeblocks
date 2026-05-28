@@ -38,7 +38,7 @@ type ResourceSnapshot struct {
 
 var (
 	clusterTerminalPhases = map[string]bool{"Running": true, "Stopped": true}
-	addonTerminalPhases   = map[string]bool{"Enabled": true, "Disabled": true, "Failed": true}
+	addonTerminalPhases   = map[string]bool{"Enabled": true, "Disabled": true}
 )
 
 const helmAddonReleasePrefix = "kb-addon-"
@@ -227,30 +227,51 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 	return result, nil
 }
 
-func checkHelmTrackedAddonsSettled(opts RunOptions) bool {
-	tracked, err := trackedAddonNames(opts, nil)
-	if err != nil || len(tracked) == 0 {
-		return err == nil
+func addonFailureError(states []helmTrackedAddonRuntime) error {
+	failed := make([]string, 0)
+	for _, state := range states {
+		if state.Phase == "Failed" {
+			failed = append(failed, state.Name)
+		}
 	}
-	states, err := loadHelmTrackedAddonRuntime(opts, tracked, time.Time{})
-	if err != nil {
-		return false
+	if len(failed) == 0 {
+		return nil
+	}
+	sort.Strings(failed)
+	return fmt.Errorf("addon 进入 Failed 状态: %s", strings.Join(failed, ", "))
+}
+
+func helmTrackedAddonsSettled(states []helmTrackedAddonRuntime) (bool, error) {
+	if err := addonFailureError(states); err != nil {
+		return false, err
 	}
 	for _, state := range states {
 		if state.Generation != 0 && state.Generation != state.ObservedGeneration {
-			return false
+			return false, nil
 		}
 		if !addonTerminalPhases[state.Phase] {
-			return false
+			return false, nil
 		}
 		if state.JobState == "Active" || state.JobState == "Pending" || state.JobState == "Deleting" {
-			return false
+			return false, nil
 		}
 		if len(state.ActivePodPhases) > 0 {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
+}
+
+func checkHelmTrackedAddonsSettled(opts RunOptions) (bool, error) {
+	tracked, err := trackedAddonNames(opts, nil)
+	if err != nil || len(tracked) == 0 {
+		return err == nil, err
+	}
+	states, err := loadHelmTrackedAddonRuntime(opts, tracked, time.Time{})
+	if err != nil {
+		return false, err
+	}
+	return helmTrackedAddonsSettled(states)
 }
 
 func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *ResourceSnapshot, startedAt time.Time) error {
@@ -275,7 +296,6 @@ func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *Re
 		}
 
 		summaryParts := make([]string, 0, len(states))
-		allSettled := true
 		for _, state := range states {
 			podSummary := "-"
 			if len(state.ActivePodPhases) > 0 {
@@ -288,20 +308,6 @@ func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *Re
 			summaryParts = append(summaryParts,
 				fmt.Sprintf("%s[phase=%s gen=%d/%d job=%s pods=%s]",
 					state.Name, phase, state.ObservedGeneration, state.Generation, state.JobState, podSummary))
-
-			if state.Generation != 0 && state.Generation != state.ObservedGeneration {
-				allSettled = false
-			}
-			if !addonTerminalPhases[state.Phase] {
-				allSettled = false
-			}
-			switch state.JobState {
-			case "Active", "Pending", "Deleting":
-				allSettled = false
-			}
-			if len(state.ActivePodPhases) > 0 {
-				allSettled = false
-			}
 		}
 
 		summary := strings.Join(summaryParts, " ")
@@ -310,6 +316,10 @@ func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *Re
 			lastSummary = summary
 		}
 
+		allSettled, err := helmTrackedAddonsSettled(states)
+		if err != nil {
+			return err
+		}
 		if allSettled {
 			logInfo("所有 Helm Addon install job 已完成，Addon 已收敛到目标 generation 且 phase 回到终态")
 			return nil

@@ -44,6 +44,7 @@ func RegisterAll(modules map[string]bool) []Step {
 		mysqlLcSnap := &ResourceSnapshot{}
 		all = append(all,
 			&PreflightDBFix{},
+			&PatchDBProviderComponentVersionsRBAC{},
 			&FixRedisAndWait{Snapshot: redisSnap},
 			&FixMySQLCVAndWait{Snapshot: mysqlSnap},
 			&FixMySQLLowercaseAndWait{Snapshot: mysqlLcSnap},
@@ -281,7 +282,7 @@ func (s *WaitKBReady) Check(opts RunOptions) (bool, error) {
 		!checkDeploymentReady(opts, "kb-system", "kubeblocks-dataprotection") {
 		return false, nil
 	}
-	return checkHelmTrackedAddonsSettled(opts), nil
+	return checkHelmTrackedAddonsSettled(opts)
 }
 
 func (s *WaitKBReady) Run(opts RunOptions) error {
@@ -701,4 +702,3 @@ func waitDBReady(opts RunOptions, dbType string, snap *ResourceSnapshot) error {
 	}
 	return watchFromSnapshot(opts.Ctx, snap, []string{"cluster", "-A"}, clusterTerminalPhases)
 }
-

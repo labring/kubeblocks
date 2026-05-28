@@ -287,7 +287,12 @@ type Step interface {
      - `mongosh`
      - `instancesets` / `configurations` CRD
 
-11. `fix_redis_and_wait`
+11. `patch_dbprovider_componentversions_rbac`
+   - 检查 `cluster-version-reader` ClusterRole 是否存在
+   - 如果不存在，说明当前集群没有 dbprovider 前端，跳过
+   - 如果存在但缺少 `apps.kubeblocks.io/componentversions` 的 `get/list/watch` 权限，则自动补齐
+
+12. `fix_redis_and_wait`
    - `Check()`：检查 Redis CR 是否已经完成转换
    - `Run()`：
      - `fix_redis_check_sentinel.sh`
@@ -295,7 +300,7 @@ type Step interface {
      - `restart_redis.sh`
      - `waitDBReady(redis)`
 
-12. `fix_mysql_cv_and_wait`
+13. `fix_mysql_cv_and_wait`
    - `Check()`：检查 MySQL 版本映射是否已经修好
    - 支持的版本映射（`mysqlVersionMap`）：
      - `ac-mysql-8.0.31` → `ac-mysql-8.0.30`
@@ -307,19 +312,19 @@ type Step interface {
      - 如有需要，顺手执行一次 `fix_mysql_lowercase.sh`
      - `waitDBReady(mysql)`
 
-13. `fix_mysql_lowercase_and_wait`
+14. `fix_mysql_lowercase_and_wait`
    - `Check()`：检查所有需要 `lower_case_table_names=1` 的 MySQL ConfigMap 是否都已补齐
    - `Run()`：
      - `fix_mysql_lowercase.sh`
      - `waitDBReady(mysql)`
 
-14. `verify_pg`
+15. `verify_pg`
 
-15. `verify_mysql`
+16. `verify_mysql`
 
-16. `verify_redis`
+17. `verify_redis`
 
-17. `verify_mongo`
+18. `verify_mongo`
 
 
 ---
@@ -393,5 +398,4 @@ type Step interface {
 
 5. `scripts/` 目录
    - 默认都应重审，必要时重写
-
 
