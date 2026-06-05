@@ -25,10 +25,11 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/types"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
@@ -188,6 +189,7 @@ func compOwnedKinds() []client.ObjectList {
 		&corev1.ServiceAccountList{},
 		&rbacv1.RoleBindingList{},
 		&batchv1.JobList{},
+		&policyv1.PodDisruptionBudgetList{},
 		&dpv1alpha1.RestoreList{},
 		&dpv1alpha1.BackupList{},
 		&appsv1alpha1.ConfigurationList{},

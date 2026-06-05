@@ -28,6 +28,7 @@ import (
 	snapshotv1beta1 "github.com/kubernetes-csi/external-snapshotter/client/v3/apis/volumesnapshot/v1beta1"
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -45,7 +46,9 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/graph"
 	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	"github.com/apecloud/kubeblocks/pkg/controller/multicluster"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	dptypes "github.com/apecloud/kubeblocks/pkg/dataprotection/types"
 )
 
 const (
@@ -339,6 +342,9 @@ func (c *clusterPlanBuilder) reconcileDeleteObject(ctx context.Context, node *mo
 			return err
 		}
 	}
+	if err := removeOrphanBackupJobFinalizer(ctx, c.cli, node.Obj, clientOption(node)); err != nil {
+		return err
+	}
 	backgroundDeleteObject := func() error {
 		deletePropagation := metav1.DeletePropagationBackground
 		deleteOptions := &client.DeleteOptions{
@@ -357,6 +363,55 @@ func (c *clusterPlanBuilder) reconcileDeleteObject(ctx context.Context, node *mo
 		}
 	}
 	return nil
+}
+
+func removeOrphanBackupJobFinalizer(ctx context.Context, cli client.Client, obj client.Object, jobOpt *multicluster.ClientOption) error {
+	job, ok := obj.(*batchv1.Job)
+	if !ok {
+		return nil
+	}
+	if !controllerutil.ContainsFinalizer(job, dptypes.DataProtectionFinalizerName) {
+		return nil
+	}
+	backupKey, ok := backupKeyFromJob(job)
+	if !ok {
+		return nil
+	}
+
+	backup := &dpv1alpha1.Backup{}
+	if err := cli.Get(ctx, backupKey, backup, multicluster.InControlContext()); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		patch := client.MergeFrom(job.DeepCopy())
+		controllerutil.RemoveFinalizer(job, dptypes.DataProtectionFinalizerName)
+		return client.IgnoreNotFound(cli.Patch(ctx, job, patch, jobOpt))
+	}
+	return nil
+}
+
+func backupKeyFromJob(job *batchv1.Job) (client.ObjectKey, bool) {
+	labels := job.GetLabels()
+	if backupName := labels[dptypes.BackupNameLabelKey]; backupName != "" {
+		backupNamespace := labels[dptypes.BackupNamespaceLabelKey]
+		if backupNamespace == "" {
+			backupNamespace = job.Namespace
+		}
+		return client.ObjectKey{
+			Namespace: backupNamespace,
+			Name:      backupName,
+		}, true
+	}
+
+	for _, ownerRef := range job.GetOwnerReferences() {
+		if ownerRef.Kind == dptypes.BackupKind && ownerRef.Name != "" {
+			return client.ObjectKey{
+				Namespace: job.Namespace,
+				Name:      ownerRef.Name,
+			}, true
+		}
+	}
+	return client.ObjectKey{}, false
 }
 
 func (c *clusterPlanBuilder) reconcileStatusObject(ctx context.Context, node *model.ObjectVertex) error {
