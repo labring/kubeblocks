@@ -91,6 +91,10 @@ func NeedDoPostProvision(ctx context.Context, cli client.Reader, actionCtx *Acti
 		return false, nil
 	}
 
+	if isComponentStopped(actionCtx.component) {
+		return false, nil
+	}
+
 	actionPreCondition := actionCtx.lifecycleActions.PostProvision.CustomHandler.PreCondition
 	if actionPreCondition != nil {
 		switch *actionPreCondition {
@@ -121,4 +125,15 @@ func NeedDoPostProvision(ctx context.Context, cli client.Reader, actionCtx *Acti
 	}
 
 	return needDoActionByCheckingJobNAnnotation(ctx, cli, actionCtx)
+}
+
+func isComponentStopped(component *appsv1alpha1.Component) bool {
+	if component == nil {
+		return false
+	}
+	if component.Spec.Stop != nil && *component.Spec.Stop {
+		return true
+	}
+	// For backward compatibility with the legacy stop path.
+	return component.Spec.Replicas == 0
 }

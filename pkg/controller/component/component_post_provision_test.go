@@ -156,11 +156,40 @@ var _ = Describe("Component PostProvision Test", func() {
 			Expect(err).Should(Succeed())
 
 			By("mock component status ready, should do postProvision action")
+			comp.Spec.Replicas = 1
 			comp.Status.Phase = appsv1alpha1.RunningClusterCompPhase
 			actionCtx.component = comp
 			need, err = NeedDoPostProvision(testCtx.Ctx, k8sClient, actionCtx)
 			Expect(err).Should(Succeed())
 			Expect(need).Should(BeTrue())
+
+			By("build component with RuntimeReady postProvision without workload, should requeue")
+			runtimeReadyPreCondition := appsv1alpha1.RuntimeReadyPreConditionType
+			synthesizeComp.LifecycleActions.PostProvision.CustomHandler.PreCondition = &runtimeReadyPreCondition
+			actionCtx, err = NewActionContext(cluster, comp, nil, synthesizeComp.LifecycleActions, synthesizeComp.ScriptTemplates, PostProvisionAction)
+			Expect(err).Should(Succeed())
+			need, err = NeedDoPostProvision(testCtx.Ctx, k8sClient, actionCtx)
+			Expect(err).ShouldNot(Succeed())
+			Expect(err.Error()).Should(ContainSubstring("runtime is nil when checking RuntimeReady preCondition"))
+			Expect(need).Should(BeFalse())
+
+			By("stopped component with RuntimeReady postProvision should skip postProvision")
+			comp.Spec.Stop = &[]bool{true}[0]
+			need, err = NeedDoPostProvision(testCtx.Ctx, k8sClient, actionCtx)
+			Expect(err).Should(Succeed())
+			Expect(need).Should(BeFalse())
+
+			By("zero-replica component with RuntimeReady postProvision should skip postProvision")
+			comp.Spec.Stop = nil
+			comp.Spec.Replicas = 0
+			comp.Status.Phase = appsv1alpha1.StoppingClusterCompPhase
+			need, err = NeedDoPostProvision(testCtx.Ctx, k8sClient, actionCtx)
+			Expect(err).Should(Succeed())
+			Expect(need).Should(BeFalse())
+
+			comp.Spec.Replicas = 1
+			comp.Status.Phase = appsv1alpha1.RunningClusterCompPhase
+			synthesizeComp.LifecycleActions.PostProvision.CustomHandler.PreCondition = &defaultPreCondition
 
 			By("build component with postProvision with PodList, do postProvision action and requeue waiting job")
 			pods := mockPodsForTest(cluster, 1)
