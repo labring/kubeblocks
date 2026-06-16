@@ -53,12 +53,12 @@ const (
 	standbyPasswordRepairReasonSucceeded    = "Succeeded"
 	standbyPasswordRepairReasonFailed       = "Failed"
 	standbyPasswordRepairReasonInconsistent = "StandbyPasswordInconsistent"
+	standbyPasswordRepairReasonUnavailable  = "StandbyPasswordUnavailable"
 	standbyPasswordRepairReasonSkipped      = "Skipped"
 
 	standbyPasswordRepairRequeueInterval = time.Minute
 	standbyPgpassPath                    = "/run/postgresql/pgpass"
 	standbyUserName                      = "standby"
-	readStandbyPasswordEnvCommand        = `printf "%s" "${PGPASSWORD_STANDBY:-}"`
 	readPostgreSQLModeEnvCommand         = `printf "%s" "${PG_MODE:-}"`
 )
 
@@ -103,6 +103,7 @@ printf "%s\n" "$matches"
 `
 
 var errStandbyEntryNotFound = errors.New("standby entry not found")
+var errStandbyPasswordUnavailable = errors.New("standby password unavailable")
 
 // componentPostgreSQLStandbyPasswordRepairTransformer repairs drift between
 // the standby password used by pods and the password stored in PostgreSQL.
@@ -124,7 +125,7 @@ func (t *componentPostgreSQLStandbyPasswordRepairTransformer) Transform(
 	if !isPostgreSQLComponent(transCtx) {
 		return nil
 	}
-	if transCtx.Component.Status.Phase != appsv1alpha1.RunningClusterCompPhase {
+	if !shouldRunStandbyPasswordRepair(transCtx.Component.Status.Phase) {
 		return nil
 	}
 
@@ -172,10 +173,25 @@ func (t *componentPostgreSQLStandbyPasswordRepairTransformer) Transform(
 		return intctrlutil.NewDelayedRequeueError(standbyPasswordRepairRequeueInterval, err.Error())
 	}
 
-	expectedPassword, err := consistentStandbyPassword(transCtx.Context, runner, pods)
+	passwordSourcePods := standbyPasswordSourcePods(pods, leaderPod.Name)
+	if len(passwordSourcePods) == 0 {
+		if transCtx.SynthesizeComponent.Replicas <= 1 {
+			t.markRepairSkipped(transCtx)
+			return nil
+		}
+		err := fmt.Errorf("postgresql standby password repair: no running replica pods with pod ip found")
+		t.markRepairFailed(transCtx, standbyPasswordRepairReasonUnavailable, err)
+		return nil
+	}
+
+	expectedPassword, err := consistentStandbyPassword(transCtx.Context, runner, passwordSourcePods)
 	if err != nil {
 		if isInconsistentStandbyPasswordError(err) {
 			t.markRepairFailed(transCtx, standbyPasswordRepairReasonInconsistent, err)
+			return nil
+		}
+		if errors.Is(err, errStandbyPasswordUnavailable) {
+			t.markRepairFailed(transCtx, standbyPasswordRepairReasonUnavailable, err)
 			return nil
 		}
 		t.markRepairFailed(transCtx, standbyPasswordRepairReasonFailed, err)
@@ -194,6 +210,17 @@ func (t *componentPostgreSQLStandbyPasswordRepairTransformer) Transform(
 			standbyPasswordRepairConditionType, "repaired PostgreSQL standby password drift")
 	}
 	return nil
+}
+
+func shouldRunStandbyPasswordRepair(phase appsv1alpha1.ClusterComponentPhase) bool {
+	switch phase {
+	case appsv1alpha1.RunningClusterCompPhase,
+		appsv1alpha1.UpdatingClusterCompPhase,
+		appsv1alpha1.AbnormalClusterCompPhase:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *componentPostgreSQLStandbyPasswordRepairTransformer) runningPods(
@@ -238,6 +265,17 @@ func (t *componentPostgreSQLStandbyPasswordRepairTransformer) leaderPod(
 	return pod, nil
 }
 
+func standbyPasswordSourcePods(pods []*corev1.Pod, leaderPodName string) []*corev1.Pod {
+	sourcePods := make([]*corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if pod == nil || pod.Name == leaderPodName {
+			continue
+		}
+		sourcePods = append(sourcePods, pod)
+	}
+	return sourcePods
+}
+
 func (t *componentPostgreSQLStandbyPasswordRepairTransformer) markRepairSucceeded(
 	transCtx *componentTransformContext,
 	repaired bool,
@@ -265,7 +303,7 @@ func (t *componentPostgreSQLStandbyPasswordRepairTransformer) markRepairSkipped(
 		ObservedGeneration: transCtx.Component.Generation,
 		LastTransitionTime: metav1.Now(),
 		Reason:             standbyPasswordRepairReasonSkipped,
-		Message:            "PostgreSQL standby password repair is skipped for standby cluster mode",
+		Message:            "PostgreSQL standby password repair is skipped",
 	})
 }
 
@@ -333,6 +371,15 @@ func consistentStandbyPassword(ctx context.Context, runner podExecRunner, pods [
 func standbyPasswordFromPod(ctx context.Context, runner podExecRunner, pod *corev1.Pod) (string, error) {
 	stdout, stderr, err := runner.Exec(ctx, pod, []string{"cat", standbyPgpassPath}, "")
 	if err != nil {
+		if strings.Contains(strings.ToLower(stderr), "no such file") {
+			return "", fmt.Errorf(
+				"postgresql standby password repair: standby password unavailable in pod %q: read pgpass failed: %v: %s: %w",
+				pod.Name,
+				err,
+				strings.TrimSpace(stderr),
+				errStandbyPasswordUnavailable,
+			)
+		}
 		return "", fmt.Errorf(
 			"postgresql standby password repair: read pgpass from pod %q: %w: %s",
 			pod.Name,
@@ -340,33 +387,19 @@ func standbyPasswordFromPod(ctx context.Context, runner podExecRunner, pod *core
 			strings.TrimSpace(stderr),
 		)
 	}
+
 	password, err := parseStandbyPasswordFromPgpass(stdout)
 	if err == nil {
 		return password, nil
 	}
-	if !errors.Is(err, errStandbyEntryNotFound) {
-		return "", fmt.Errorf("postgresql standby password repair: parse pgpass from pod %q: %w", pod.Name, err)
-	}
-
-	// Some PostgreSQL leaders keep only the superuser entry in pgpass, while the
-	// replication password is still exposed through the pod environment.
-	stdout, stderr, err = runner.Exec(ctx, pod, []string{"sh", "-c", readStandbyPasswordEnvCommand}, "")
-	if err != nil {
+	if errors.Is(err, errStandbyEntryNotFound) {
 		return "", fmt.Errorf(
-			"postgresql standby password repair: read standby env from pod %q: %w: %s",
+			"postgresql standby password repair: standby password unavailable in pod %q: standby password not found in pgpass: %w",
 			pod.Name,
-			err,
-			strings.TrimSpace(stderr),
+			errStandbyPasswordUnavailable,
 		)
 	}
-	password = strings.TrimRight(stdout, "\r\n")
-	if password == "" {
-		return "", fmt.Errorf(
-			"postgresql standby password repair: standby password not found in pod %q pgpass or env",
-			pod.Name,
-		)
-	}
-	return password, nil
+	return "", fmt.Errorf("postgresql standby password repair: parse pgpass from pod %q: %w", pod.Name, err)
 }
 
 func ensureLeaderStandbyPassword(

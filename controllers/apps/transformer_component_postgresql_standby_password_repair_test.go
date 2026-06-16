@@ -21,6 +21,7 @@ package apps
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -38,6 +39,7 @@ import (
 	ctrlcomp "github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/graph"
 	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 func TestParseStandbyPasswordFromPgpass(t *testing.T) {
@@ -113,34 +115,6 @@ func TestConsistentStandbyPassword(t *testing.T) {
 	require.Equal(t, "secret", password)
 	require.Equal(t, [][]string{
 		{"cat", standbyPgpassPath},
-		{"cat", standbyPgpassPath},
-	}, runner.commands)
-}
-
-func TestConsistentStandbyPasswordFallsBackToEnv(t *testing.T) {
-	t.Parallel()
-
-	pods := []*corev1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "postgresql-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "postgresql-1"}},
-	}
-	runner := &fakePodExecRunner{
-		pgpass: map[string]string{
-			"postgresql-0": "localhost:5432:*:postgres:secret",
-			"postgresql-1": "localhost:5432:*:standby:secret",
-		},
-		standbyEnv: map[string]string{
-			"postgresql-0": "secret",
-		},
-	}
-
-	password, err := consistentStandbyPassword(context.Background(), runner, pods)
-
-	require.NoError(t, err)
-	require.Equal(t, "secret", password)
-	require.Equal(t, [][]string{
-		{"cat", standbyPgpassPath},
-		{"sh", "-c", readStandbyPasswordEnvCommand},
 		{"cat", standbyPgpassPath},
 	}, runner.commands)
 }
@@ -238,11 +212,8 @@ func TestComponentPostgreSQLStandbyPasswordRepairTransformer(t *testing.T) {
 	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
 	runner := &fakePodExecRunner{
 		pgpass: map[string]string{
-			leaderPodName: "localhost:5432:*:postgres:secret",
 			replicaPod:    "localhost:5432:*:standby:secret",
-		},
-		standbyEnv: map[string]string{
-			leaderPodName: "secret",
+			leaderPodName: "localhost:5432:*:standby:leader-secret",
 		},
 		ensureResult: "f",
 	}
@@ -258,6 +229,158 @@ func TestComponentPostgreSQLStandbyPasswordRepairTransformer(t *testing.T) {
 	require.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
+func TestComponentPostgreSQLStandbyPasswordRepairTransformerRunsWhileNotRunning(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		phase appsv1alpha1.ClusterComponentPhase
+	}{
+		{
+			name:  "updating",
+			phase: appsv1alpha1.UpdatingClusterCompPhase,
+		},
+		{
+			name:  "abnormal",
+			phase: appsv1alpha1.AbnormalClusterCompPhase,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				leaderPodName = "test-postgresql-1"
+				replicaPod    = "test-postgresql-0"
+			)
+
+			transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
+			transCtx.Component.Status.Phase = tc.phase
+			runner := &fakePodExecRunner{
+				pgpass: map[string]string{
+					replicaPod:    "localhost:5432:*:standby:secret",
+					leaderPodName: "localhost:5432:*:postgres:ignored",
+				},
+				ensureResult: "f",
+			}
+
+			err := (&componentPostgreSQLStandbyPasswordRepairTransformer{
+				execRunner: runner,
+			}).Transform(transCtx, graph.NewDAG())
+
+			require.NoError(t, err)
+			require.Equal(t, leaderPodName, runner.ensurePod)
+			require.Equal(t, "secret", runner.stdin)
+		})
+	}
+}
+
+func TestComponentPostgreSQLStandbyPasswordRepairTransformerUnavailableDoesNotRequeue(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leaderPodName = "test-postgresql-1"
+		replicaPod    = "test-postgresql-0"
+	)
+
+	testCases := []struct {
+		name   string
+		runner *fakePodExecRunner
+	}{
+		{
+			name: "missing pgpass",
+			runner: &fakePodExecRunner{
+				missingPgpass: map[string]bool{
+					replicaPod: true,
+				},
+			},
+		},
+		{
+			name: "standby entry missing",
+			runner: &fakePodExecRunner{
+				pgpass: map[string]string{
+					replicaPod: "localhost:5432:*:postgres:secret",
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
+			err := (&componentPostgreSQLStandbyPasswordRepairTransformer{
+				execRunner: tc.runner,
+			}).Transform(transCtx, graph.NewDAG())
+
+			require.NoError(t, err)
+			require.Empty(t, tc.runner.ensurePod)
+			cond := meta.FindStatusCondition(transCtx.Component.Status.Conditions, standbyPasswordRepairConditionType)
+			require.NotNil(t, cond)
+			require.Equal(t, metav1.ConditionFalse, cond.Status)
+			require.Equal(t, standbyPasswordRepairReasonUnavailable, cond.Reason)
+		})
+	}
+}
+
+func TestComponentPostgreSQLStandbyPasswordRepairTransformerSkipsSingleReplica(t *testing.T) {
+	t.Parallel()
+
+	const leaderPodName = "test-postgresql-0"
+
+	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName)
+	runner := &fakePodExecRunner{
+		pgpass: map[string]string{
+			leaderPodName: "localhost:5432:*:standby:secret",
+		},
+	}
+
+	err := (&componentPostgreSQLStandbyPasswordRepairTransformer{
+		execRunner: runner,
+	}).Transform(transCtx, graph.NewDAG())
+
+	require.NoError(t, err)
+	require.Empty(t, runner.ensurePod)
+	cond := meta.FindStatusCondition(transCtx.Component.Status.Conditions, standbyPasswordRepairConditionType)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionTrue, cond.Status)
+	require.Equal(t, standbyPasswordRepairReasonSkipped, cond.Reason)
+}
+
+func TestComponentPostgreSQLStandbyPasswordRepairTransformerPgpassExecFailureRequeues(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leaderPodName = "test-postgresql-1"
+		replicaPod    = "test-postgresql-0"
+	)
+
+	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
+	runner := &fakePodExecRunner{
+		pgpassError: map[string]error{
+			replicaPod: fmt.Errorf("exec failed"),
+		},
+		pgpassStderr: map[string]string{
+			replicaPod: "container not found",
+		},
+	}
+
+	err := (&componentPostgreSQLStandbyPasswordRepairTransformer{
+		execRunner: runner,
+	}).Transform(transCtx, graph.NewDAG())
+
+	require.Error(t, err)
+	require.True(t, intctrlutil.IsDelayedRequeueError(err))
+	cond := meta.FindStatusCondition(transCtx.Component.Status.Conditions, standbyPasswordRepairConditionType)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionFalse, cond.Status)
+	require.Equal(t, standbyPasswordRepairReasonFailed, cond.Reason)
+}
+
 func TestComponentPostgreSQLStandbyPasswordRepairConditionUsesStatusVertex(t *testing.T) {
 	t.Parallel()
 
@@ -269,11 +392,8 @@ func TestComponentPostgreSQLStandbyPasswordRepairConditionUsesStatusVertex(t *te
 	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
 	runner := &fakePodExecRunner{
 		pgpass: map[string]string{
-			leaderPodName: "localhost:5432:*:postgres:secret",
 			replicaPod:    "localhost:5432:*:standby:secret",
-		},
-		standbyEnv: map[string]string{
-			leaderPodName: "secret",
+			leaderPodName: "localhost:5432:*:postgres:ignored",
 		},
 		ensureResult: "f",
 	}
@@ -334,14 +454,16 @@ func TestComponentPostgreSQLStandbyPasswordRepairTransformerInconsistent(t *test
 
 	const (
 		leaderPodName = "test-postgresql-1"
-		replicaPod    = "test-postgresql-0"
+		replicaPodA   = "test-postgresql-0"
+		replicaPodB   = "test-postgresql-2"
 	)
 
-	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPod)
+	transCtx := newPostgreSQLStandbyPasswordRepairTestContext(t, leaderPodName, replicaPodA, replicaPodB)
 	runner := &fakePodExecRunner{
 		pgpass: map[string]string{
-			leaderPodName: "localhost:5432:*:standby:secret-a",
-			replicaPod:    "localhost:5432:*:standby:secret-b",
+			leaderPodName: "localhost:5432:*:standby:leader-secret",
+			replicaPodA:   "localhost:5432:*:standby:secret-a",
+			replicaPodB:   "localhost:5432:*:standby:secret-b",
 		},
 	}
 
@@ -403,7 +525,7 @@ func newPostgreSQLStandbyPasswordRepairTestContext(
 		WithScheme(rscheme).
 		WithObjects(objects...).
 		Build()
-	replicas := int32(len(objects) - 3)
+	replicas := int32(1 + len(replicaPodNames))
 	membersStatus := []workloads.MemberStatus{{
 		PodName: leaderPodName,
 		ReplicaRole: &workloads.ReplicaRole{
@@ -484,14 +606,16 @@ func postgresqlTestPod(namespace, name string, labels map[string]string) *corev1
 }
 
 type fakePodExecRunner struct {
-	pgpass       map[string]string
-	pgMode       map[string]string
-	standbyEnv   map[string]string
-	ensureResult string
-	ensurePod    string
-	stdin        string
-	lastCommand  []string
-	commands     [][]string
+	pgpass        map[string]string
+	pgpassError   map[string]error
+	pgpassStderr  map[string]string
+	pgMode        map[string]string
+	missingPgpass map[string]bool
+	ensureResult  string
+	ensurePod     string
+	stdin         string
+	lastCommand   []string
+	commands      [][]string
 }
 
 func (r *fakePodExecRunner) Exec(
@@ -503,11 +627,13 @@ func (r *fakePodExecRunner) Exec(
 	r.commands = append(r.commands, append([]string{}, command...))
 	r.lastCommand = append([]string{}, command...)
 	if len(command) == 2 && command[0] == "cat" && command[1] == standbyPgpassPath {
+		if err := r.pgpassError[pod.Name]; err != nil {
+			return "", r.pgpassStderr[pod.Name], err
+		}
+		if r.missingPgpass[pod.Name] {
+			return "", "cat: /run/postgresql/pgpass: No such file or directory", fmt.Errorf("exit status 1")
+		}
 		return r.pgpass[pod.Name], "", nil
-	}
-	if len(command) == 3 && command[0] == "sh" && command[1] == "-c" &&
-		command[2] == readStandbyPasswordEnvCommand {
-		return r.standbyEnv[pod.Name], "", nil
 	}
 	if len(command) == 3 && command[0] == "sh" && command[1] == "-c" &&
 		command[2] == readPostgreSQLModeEnvCommand {
