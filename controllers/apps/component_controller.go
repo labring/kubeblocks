@@ -97,6 +97,7 @@ type ComponentReconciler struct {
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 
 // +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=componentresourceconstraints,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=opsrequests,verbs=get;list;watch;create
 
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts/status,verbs=get
@@ -189,6 +190,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			&componentPatroniDCSRepairTransformer{},
 			// repair PostgreSQL standby password drift after replication breaks
 			&componentPostgreSQLStandbyPasswordRepairTransformer{},
+			// report PostgreSQL replication health from controller-side checks
+			&componentPostgreSQLReplicationHealthTransformer{},
 		).Build()
 
 	// Execute stage
