@@ -21,6 +21,7 @@ package apps
 
 import (
 	"context"
+	"reflect"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -31,10 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
@@ -229,7 +233,8 @@ func (r *ComponentReconciler) setupWithManager(mgr ctrl.Manager) error {
 		Owns(&dpv1alpha1.Restore{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
-		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources),
+			builder.WithPredicates(componentPodUpdatePredicate())).
 		Owns(&batchv1.Job{}).
 		Watches(&appsv1alpha1.Configuration{}, handler.EnqueueRequestsFromMapFunc(r.configurationEventHandler))
 
@@ -262,13 +267,49 @@ func (r *ComponentReconciler) setupWithMultiClusterManager(mgr ctrl.Manager, mul
 		Watch(b, &corev1.Secret{}, eventHandler).
 		Watch(b, &corev1.ConfigMap{}, eventHandler).
 		Watch(b, &corev1.PersistentVolumeClaim{}, eventHandler).
-		Watch(b, &corev1.Pod{}, eventHandler).
+		Watch(b, &corev1.Pod{}, eventHandler, builder.WithPredicates(componentPodUpdatePredicate())).
 		Watch(b, &batchv1.Job{}, eventHandler).
 		Watch(b, &corev1.ServiceAccount{}, eventHandler).
 		Watch(b, &rbacv1.RoleBinding{}, eventHandler).
 		Watch(b, &rbacv1.ClusterRoleBinding{}, eventHandler)
 
 	return b.Complete(r)
+}
+
+func componentPodUpdatePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !isIgnoredComponentPodUpdate(e.ObjectOld, e.ObjectNew)
+		},
+	}
+}
+
+const roleChangedEventHandledAnnotationKey = "role.kubeblocks.io/event-handled"
+
+func isIgnoredComponentPodUpdate(oldObj, newObj client.Object) bool {
+	oldPod, ok := oldObj.(*corev1.Pod)
+	if !ok || oldPod == nil {
+		return false
+	}
+	newPod, ok := newObj.(*corev1.Pod)
+	if !ok || newPod == nil {
+		return false
+	}
+	oldCopy := oldPod.DeepCopy()
+	newCopy := newPod.DeepCopy()
+	normalizeIgnoredComponentPodUpdate(oldCopy)
+	normalizeIgnoredComponentPodUpdate(newCopy)
+	return reflect.DeepEqual(oldCopy, newCopy)
+}
+
+func normalizeIgnoredComponentPodUpdate(pod *corev1.Pod) {
+	pod.ResourceVersion = ""
+	pod.ManagedFields = nil
+	delete(pod.Annotations, constant.LastRoleSnapshotVersionAnnotationKey)
+	delete(pod.Annotations, roleChangedEventHandledAnnotationKey)
+	if len(pod.Annotations) == 0 {
+		pod.Annotations = nil
+	}
 }
 
 func (r *ComponentReconciler) filterComponentResources(ctx context.Context, obj client.Object) []reconcile.Request {

@@ -40,7 +40,7 @@ type Manager interface {
 
 	Own(b *builder.Builder, obj, owner client.Object) Manager
 
-	Watch(b *builder.Builder, obj client.Object, eventHandler handler.EventHandler) Manager
+	Watch(b *builder.Builder, obj client.Object, eventHandler handler.EventHandler, opts ...builder.WatchesOption) Manager
 }
 
 type manager struct {
@@ -79,10 +79,10 @@ func (m *manager) Own(b *builder.Builder, obj, owner client.Object) Manager {
 	return m
 }
 
-func (m *manager) Watch(b *builder.Builder, obj client.Object, eventHandler handler.EventHandler) Manager {
+func (m *manager) Watch(b *builder.Builder, obj client.Object, eventHandler handler.EventHandler, opts ...builder.WatchesOption) Manager {
 	for k, c := range m.caches {
 		if c != nil {
-			b.WatchesRawSource(source.Kind(m.caches[k], obj), eventHandler)
+			b.WatchesRawSource(source.Kind(m.caches[k], obj), eventHandler, opts...)
 		}
 	}
 	return m
