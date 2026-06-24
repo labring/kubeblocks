@@ -98,7 +98,7 @@ func sync(params reconfigureParams, updatedParameters map[string]string, pods []
 		return makeReturnedStatus(ESFailedAndRetry), err
 	}
 	if len(pods) == 0 {
-		if replicas == 0 {
+		if params.isTargetStopped() {
 			return makeReturnedStatus(ESNone), nil
 		}
 		params.Ctx.Log.Info(fmt.Sprintf("no pods to update, and retry, selector: %v", selector))

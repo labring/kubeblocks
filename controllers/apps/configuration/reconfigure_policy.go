@@ -196,6 +196,13 @@ func (param *reconfigureParams) getTargetReplicas() int {
 	return int(param.ClusterComponent.Replicas)
 }
 
+func (param *reconfigureParams) isTargetStopped() bool {
+	if param.ClusterComponent.Stop != nil && *param.ClusterComponent.Stop {
+		return true
+	}
+	return param.ClusterComponent.Replicas == 0
+}
+
 func (param *reconfigureParams) podMinReadySeconds() int32 {
 	minReadySeconds := param.SynthesizedComponent.MinReadySeconds
 	return util.Max(minReadySeconds, viper.GetInt32(constant.PodMinReadySecondsEnv))

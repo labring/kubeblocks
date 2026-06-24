@@ -174,4 +174,24 @@ var _ = Describe("Reconfigure OperatorSyncPolicy", func() {
 		})
 	})
 
+	Context("sync reconfigure policy without pods test", func() {
+		DescribeTable("Should handle no pod target by component state",
+			func(replicas int, stopped bool, expectedStatus ExecStatus) {
+				mockParam := newMockReconfigureParams("operatorSyncPolicyNoPods", nil,
+					withConfigSpec("for_test", map[string]string{"a": "c b e f"}),
+					withConfigConstraintSpec(&appsv1beta1.FileFormatConfig{Format: appsv1beta1.RedisCfg}),
+					withClusterComponent(replicas))
+				if stopped {
+					mockParam.ClusterComponent.Stop = &stopped
+				}
+
+				status, err := sync(mockParam, map[string]string{"a": "c b e f"}, nil, RollingUpgradeFuncs{})
+				Expect(err).Should(Succeed())
+				Expect(status.Status).Should(BeEquivalentTo(expectedStatus))
+			},
+			Entry("stopped component", 1, true, ESNone),
+			Entry("legacy zero replicas component", 0, false, ESNone),
+			Entry("running component", 1, false, ESRetry))
+	})
+
 })
