@@ -55,6 +55,7 @@ func TestEvaluatePostgreSQLReplicationHealth(t *testing.T) {
 		{
 			name: "ready",
 			leaderState: postgreSQLLeaderState{
+				TimelineID: 29,
 				Replications: []postgreSQLReplicationConnection{{
 					ApplicationName: "test_postgresql_0",
 					State:           "streaming",
@@ -68,11 +69,25 @@ func TestEvaluatePostgreSQLReplicationHealth(t *testing.T) {
 				"test-postgresql-0": {
 					InRecovery:      true,
 					PrimaryConninfo: "application_name=test_postgresql_0",
-					WALReceiver:     &postgreSQLWALReceiverStatus{Status: "streaming"},
+					WALReceiver:     &postgreSQLWALReceiverStatus{Status: "streaming", ReceivedTLI: 29},
 				},
 			},
 			wantReady:  true,
 			wantReason: postgreSQLReplicationReasonReady,
+		},
+		{
+			name: "selected primary is still in recovery",
+			leaderState: postgreSQLLeaderState{
+				InRecovery: true,
+			},
+			replicaStates: map[string]postgreSQLReplicaState{
+				"test-postgresql-0": {
+					InRecovery:      true,
+					PrimaryConninfo: "application_name=test_postgresql_0",
+					WALReceiver:     &postgreSQLWALReceiverStatus{Status: "streaming"},
+				},
+			},
+			wantReason: postgreSQLReplicationReasonPrimaryInRecovery,
 		},
 		{
 			name: "inactive slot",
@@ -128,6 +143,27 @@ func TestEvaluatePostgreSQLReplicationHealth(t *testing.T) {
 				},
 			},
 			wantReason: postgreSQLReplicationReasonWALReceiverNotStreaming,
+		},
+		{
+			name: "timeline mismatch",
+			leaderState: postgreSQLLeaderState{
+				TimelineID: 29,
+				Slots: []postgreSQLReplicationSlot{{
+					SlotName: "test_postgresql_0",
+					Active:   true,
+				}},
+			},
+			replicaStates: map[string]postgreSQLReplicaState{
+				"test-postgresql-0": {
+					InRecovery:      true,
+					PrimaryConninfo: "application_name=test_postgresql_0",
+					WALReceiver: &postgreSQLWALReceiverStatus{
+						Status:      "streaming",
+						ReceivedTLI: 21,
+					},
+				},
+			},
+			wantReason: postgreSQLReplicationReasonTimelineMismatch,
 		},
 		{
 			name: "primary connection missing",
@@ -435,6 +471,91 @@ func TestComponentPostgreSQLReplicationAutoRebuildTransformCreatesOpsRequestAfte
 	require.Len(t, opsRequests, 1)
 	require.Equal(t, appsv1alpha1.RebuildInstanceType, opsRequests[0].Spec.Type)
 	require.Equal(t, []appsv1alpha1.Instance{{Name: replicaPod}}, opsRequests[0].Spec.RebuildFrom[0].Instances)
+}
+
+func TestComponentPostgreSQLReplicationAutoRebuildCreatesOpsRequestForTimelineMismatch(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leaderPodName = "test-postgresql-1"
+		replicaPod    = "test-postgresql-0"
+	)
+
+	transCtx := newPostgreSQLReplicationHealthTestContext(t, leaderPodName, replicaPod)
+	transCtx.Component.Annotations = map[string]string{
+		postgreSQLReplicationAutoRebuildWindowAnnotation: "1m",
+	}
+	meta.SetStatusCondition(&transCtx.Component.Status.Conditions, metav1.Condition{
+		Type:               postgreSQLReplicationAutoRebuildPendingConditionType(replicaPod),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: transCtx.Component.Generation,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * time.Minute)),
+		Reason:             postgreSQLReplicationReasonTimelineMismatch,
+		Message:            "timeline mismatch",
+	})
+	runner := newFakePostgreSQLReplicationExecRunner(t, map[string]any{
+		leaderPodName: postgreSQLLeaderState{
+			TimelineID: 29,
+			Slots: []postgreSQLReplicationSlot{{
+				SlotName: "test_postgresql_0",
+				Active:   true,
+			}},
+		},
+		replicaPod: postgreSQLReplicaState{
+			InRecovery:      true,
+			PrimaryConninfo: "application_name=test_postgresql_0",
+			WALReceiver: &postgreSQLWALReceiverStatus{
+				Status:      "streaming",
+				SlotName:    "test_postgresql_0",
+				ReceivedTLI: 21,
+			},
+		},
+	})
+	dag := initializedPostgreSQLReplicationHealthDAG(t, transCtx)
+
+	err := (&componentPostgreSQLReplicationHealthTransformer{execRunner: runner}).Transform(transCtx, dag)
+
+	require.True(t, intctrlutil.IsDelayedRequeueError(err))
+	require.Equal(t, postgreSQLReplicationHealthRequeueInterval, requeueAfter(t, err))
+	opsRequests := graphOpsRequests(transCtx, dag)
+	require.Len(t, opsRequests, 1)
+	require.Equal(t, appsv1alpha1.RebuildInstanceType, opsRequests[0].Spec.Type)
+	require.Equal(t, []appsv1alpha1.Instance{{Name: replicaPod}}, opsRequests[0].Spec.RebuildFrom[0].Instances)
+}
+
+func TestComponentPostgreSQLReplicationAutoRebuildSkipsPrimaryInRecovery(t *testing.T) {
+	t.Parallel()
+
+	const (
+		leaderPodName = "test-postgresql-1"
+		replicaPod    = "test-postgresql-0"
+	)
+
+	transCtx := newPostgreSQLReplicationHealthTestContext(t, leaderPodName, replicaPod)
+	transCtx.Component.Annotations = map[string]string{
+		postgreSQLReplicationAutoRebuildWindowAnnotation: "1m",
+	}
+	runner := newFakePostgreSQLReplicationExecRunner(t, map[string]any{
+		leaderPodName: postgreSQLLeaderState{
+			InRecovery: true,
+		},
+		replicaPod: postgreSQLReplicaState{
+			InRecovery:      true,
+			PrimaryConninfo: "application_name=test_postgresql_0",
+			WALReceiver:     &postgreSQLWALReceiverStatus{Status: "streaming", SlotName: "test_postgresql_0"},
+		},
+	})
+	dag := initializedPostgreSQLReplicationHealthDAG(t, transCtx)
+
+	err := (&componentPostgreSQLReplicationHealthTransformer{execRunner: runner}).Transform(transCtx, dag)
+
+	require.True(t, intctrlutil.IsDelayedRequeueError(err))
+	require.Equal(t, postgreSQLReplicationHealthRequeueInterval, requeueAfter(t, err))
+	cond := meta.FindStatusCondition(transCtx.Component.Status.Conditions, postgreSQLReplicationReadyConditionType)
+	require.NotNil(t, cond)
+	require.Equal(t, metav1.ConditionFalse, cond.Status)
+	require.Equal(t, postgreSQLReplicationReasonPrimaryInRecovery, cond.Reason)
+	require.Empty(t, graphOpsRequests(transCtx, dag))
 }
 
 func TestComponentPostgreSQLReplicationAutoRebuildCreatesOpsRequestAfterWindow(t *testing.T) {

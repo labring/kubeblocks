@@ -51,11 +51,13 @@ const (
 	postgreSQLReplicationReasonReady                   = "ReplicationReady"
 	postgreSQLReplicationReasonHealthCheckFailed       = "ReplicationHealthCheckFailed"
 	postgreSQLReplicationReasonPrimaryNotFound         = "PrimaryNotFound"
+	postgreSQLReplicationReasonPrimaryInRecovery       = "PrimaryInRecovery"
 	postgreSQLReplicationReasonReplicasNotFound        = "ReplicasNotFound"
 	postgreSQLReplicationReasonReplicasNotApplicable   = "ReplicasNotApplicable"
 	postgreSQLReplicationReasonSlotInactive            = "SlotInactive"
 	postgreSQLReplicationReasonWALReceiverMissing      = "WalReceiverMissing"
 	postgreSQLReplicationReasonWALReceiverNotStreaming = "WalReceiverNotStreaming"
+	postgreSQLReplicationReasonTimelineMismatch        = "TimelineMismatch"
 
 	postgreSQLReplicationHealthRequeueInterval = 5 * time.Minute
 	postgreSQLReplicationExecTimeout           = 5 * time.Second
@@ -404,7 +406,8 @@ func isPostgreSQLReplicationRebuildable(result postgreSQLReplicationHealthResult
 	switch result.Reason {
 	case postgreSQLReplicationReasonSlotInactive,
 		postgreSQLReplicationReasonWALReceiverMissing,
-		postgreSQLReplicationReasonWALReceiverNotStreaming:
+		postgreSQLReplicationReasonWALReceiverNotStreaming,
+		postgreSQLReplicationReasonTimelineMismatch:
 		return true
 	default:
 		return false
@@ -626,6 +629,8 @@ var postgreSQLReplicationPSQLCommand = []string{
 
 const postgreSQLReplicationLeaderSQL = `
 SELECT json_build_object(
+  'in_recovery', pg_is_in_recovery(),
+  'timeline_id', (pg_control_checkpoint()).timeline_id,
   'replications', COALESCE((
     SELECT json_agg(json_build_object(
       'application_name', application_name,
@@ -645,7 +650,7 @@ SELECT json_build_object(
       'restart_lsn', restart_lsn::text,
       'retained_wal_bytes',
         CASE
-          WHEN restart_lsn IS NULL THEN NULL
+          WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL
           ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::text
         END
     ))
@@ -781,6 +786,8 @@ func decodePostgreSQLReplicationJSON(output string, target any) error {
 }
 
 type postgreSQLLeaderState struct {
+	InRecovery   bool                              `json:"in_recovery"`
+	TimelineID   int64                             `json:"timeline_id"`
 	Replications []postgreSQLReplicationConnection `json:"replications"`
 	Slots        []postgreSQLReplicationSlot       `json:"slots"`
 }
@@ -837,6 +844,16 @@ func evaluatePostgreSQLReplicationHealth(
 			Message: "PostgreSQL replica states are not found",
 		}
 	}
+	if leaderState.InRecovery {
+		return postgreSQLReplicationHealthResult{
+			Ready:  false,
+			Reason: postgreSQLReplicationReasonPrimaryInRecovery,
+			Message: fmt.Sprintf(
+				"PostgreSQL primary pod %q from InstanceSet member status is still in recovery",
+				leaderPodName,
+			),
+		}
+	}
 
 	replicaNames := make([]string, 0, len(replicaStates))
 	for podName := range replicaStates {
@@ -891,6 +908,22 @@ func evaluatePostgreSQLReplicationHealth(
 					"PostgreSQL replica %q WAL receiver is %q",
 					podName,
 					replicaState.WALReceiver.Status,
+				),
+			}
+		}
+		if leaderState.TimelineID > 0 &&
+			replicaState.WALReceiver.ReceivedTLI > 0 &&
+			leaderState.TimelineID != replicaState.WALReceiver.ReceivedTLI {
+			return postgreSQLReplicationHealthResult{
+				Ready:      false,
+				Reason:     postgreSQLReplicationReasonTimelineMismatch,
+				ReplicaPod: podName,
+				Message: fmt.Sprintf(
+					"PostgreSQL replica %q WAL receiver timeline %d differs from primary %q timeline %d",
+					podName,
+					replicaState.WALReceiver.ReceivedTLI,
+					leaderPodName,
+					leaderState.TimelineID,
 				),
 			}
 		}
