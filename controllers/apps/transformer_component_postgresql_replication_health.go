@@ -59,7 +59,7 @@ const (
 	postgreSQLReplicationReasonWALReceiverNotStreaming = "WalReceiverNotStreaming"
 	postgreSQLReplicationReasonTimelineMismatch        = "TimelineMismatch"
 
-	postgreSQLReplicationHealthRequeueInterval = 5 * time.Minute
+	postgreSQLReplicationHealthRequeueInterval = 10 * time.Minute
 	postgreSQLReplicationExecTimeout           = 5 * time.Second
 	postgreSQLReplicationMaxJSONOutputBytes    = 64 * 1024
 
