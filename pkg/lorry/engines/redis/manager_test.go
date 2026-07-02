@@ -64,6 +64,44 @@ var _ = Describe("Redis DBManager", func() {
 	})
 })
 
+var _ = Describe("Redis replica role helpers", func() {
+	It("parses redis replication role from CRLF info output", func() {
+		info := "role:master\r\nconnected_slaves:1\r\n"
+		Expect(parseRedisReplicationRole(info)).Should(Equal("master"))
+	})
+
+	It("parses redis replication role from LF info output", func() {
+		info := "connected_slaves:0\nrole:slave\nmaster_link_status:down\n"
+		Expect(parseRedisReplicationRole(info)).Should(Equal("slave"))
+	})
+
+	It("returns empty role when replication info has no role line", func() {
+		Expect(parseRedisReplicationRole("connected_slaves:0\r\n")).Should(BeEmpty())
+	})
+
+	It("extracts pod name from sentinel FQDN", func() {
+		host := "wechat-log-cache-redis-0.wechat-log-cache-redis-headless.ns-gewclvtg.svc.cluster.local"
+		Expect(parseRedisHostName(host)).Should(Equal("wechat-log-cache-redis-0"))
+	})
+
+	It("parses sentinel master address", func() {
+		host := "wechat-log-cache-redis-0.wechat-log-cache-redis-headless.ns-gewclvtg.svc.cluster.local"
+		key, name, err := parseSentinelMaster([]string{host, "6379"})
+		Expect(err).Should(Succeed())
+		Expect(key).Should(Equal(host + ":6379"))
+		Expect(name).Should(Equal("wechat-log-cache-redis-0"))
+	})
+
+	It("rejects invalid sentinel master address", func() {
+		_, _, err := parseSentinelMaster([]string{"wechat-log-cache-redis-0"})
+		Expect(err).Should(HaveOccurred())
+	})
+
+	It("splits comma separated sentinel pod names and drops empty items", func() {
+		Expect(splitCSV(" sentinel-0, sentinel-1,,sentinel-2 ")).Should(Equal([]string{"sentinel-0", "sentinel-1", "sentinel-2"}))
+	})
+})
+
 // func TestRedisInit(t *testing.T) {
 // 	r, _ := mockRedisOps(t)
 // 	defer r.Close()
