@@ -28,6 +28,7 @@ import (
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/configuration/core"
 	cfgutil "github.com/apecloud/kubeblocks/pkg/configuration/util"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	configctrl "github.com/apecloud/kubeblocks/pkg/controller/configuration"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
@@ -63,6 +64,11 @@ func NewTask(item appsv1alpha1.ConfigurationItemDetail, status *appsv1alpha1.Con
 			configMap := fetcher.ConfigMapObj
 			switch intctrlutil.GetConfigSpecReconcilePhase(configMap, item, status) {
 			default:
+				// A merged item may still need a metadata-only pass if the ConfigMap
+				// revision lags behind the current Configuration revision.
+				if shouldFinalizeConfigRevision(configMap, status, revision) {
+					return syncImpl(fetcher, item, status, synComponent, revision, configSpec, dependOnObjs)
+				}
 				return syncStatus(configMap, status)
 			case appsv1alpha1.CPendingPhase,
 				appsv1alpha1.CMergeFailedPhase:
@@ -73,6 +79,13 @@ func NewTask(item appsv1alpha1.ConfigurationItemDetail, status *appsv1alpha1.Con
 		},
 		Status: status,
 	}
+}
+
+func shouldFinalizeConfigRevision(configMap *corev1.ConfigMap, status *appsv1alpha1.ConfigurationItemDetailStatus, revision string) bool {
+	if configMap == nil || status == nil || revision == "" || status.UpdateRevision != revision {
+		return false
+	}
+	return configMap.Annotations[constant.ConfigurationRevision] != revision
 }
 
 func syncImpl(fetcher *Task,
