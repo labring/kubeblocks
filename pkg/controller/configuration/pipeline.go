@@ -56,6 +56,7 @@ type pipeline struct {
 
 type updatePipeline struct {
 	reconcile     bool
+	metadataOnly  bool
 	renderWrapper renderWrapper
 
 	item       appsv1alpha1.ConfigurationItemDetail
@@ -261,6 +262,7 @@ func (p *updatePipeline) isDone() bool {
 
 func (p *updatePipeline) PrepareForTemplate() *updatePipeline {
 	buildTemplate := func() (err error) {
+		p.metadataOnly = false
 		p.reconcile = !intctrlutil.IsApplyConfigChanged(p.ConfigMapObj, p.item)
 		if p.isDone() {
 			return
@@ -342,7 +344,11 @@ func (p *updatePipeline) ApplyParameters() *updatePipeline {
 func (p *updatePipeline) UpdateConfigVersion(revision string) *updatePipeline {
 	return p.Wrap(func() error {
 		if p.isDone() {
-			return nil
+			if p.ConfigMapObj == nil || p.ConfigMapObj.Annotations[constant.ConfigurationRevision] == revision {
+				return nil
+			}
+			p.metadataOnly = true
+			p.newCM = p.ConfigMapObj.DeepCopy()
 		}
 
 		if err := updateConfigMetaForCM(p.newCM, &p.item, revision); err != nil {
@@ -366,13 +372,13 @@ func (p *updatePipeline) UpdateConfigVersion(revision string) *updatePipeline {
 // TODO(leon)
 func (p *updatePipeline) Sync() *updatePipeline {
 	return p.Wrap(func() error {
-		if p.ConfigConstraintObj != nil && !p.isDone() {
+		if p.ConfigConstraintObj != nil && p.reconcile {
 			if err := SyncEnvConfigmap(*p.configSpec, p.newCM, &p.ConfigConstraintObj.Spec, p.Client, p.Context); err != nil {
 				return err
 			}
 		}
 		switch {
-		case p.isDone():
+		case p.isDone() && !p.metadataOnly:
 			return nil
 		case p.ConfigMapObj == nil && p.newCM != nil:
 			return p.Client.Create(p.Context, p.newCM)

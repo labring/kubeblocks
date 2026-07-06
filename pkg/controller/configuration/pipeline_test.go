@@ -21,6 +21,7 @@ package configuration
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -35,6 +36,7 @@ import (
 	appsv1beta1 "github.com/apecloud/kubeblocks/apis/apps/v1beta1"
 	cfgcore "github.com/apecloud/kubeblocks/pkg/configuration/core"
 	cfgutil "github.com/apecloud/kubeblocks/pkg/configuration/util"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/builder"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
@@ -73,6 +75,11 @@ var _ = Describe("ConfigurationPipelineTest", func() {
 				if client.ObjectKeyFromObject(obj) == client.ObjectKeyFromObject(configurationObj) {
 					configurationObj.Spec = *v.Spec.DeepCopy()
 					configurationObj.Status = *v.Status.DeepCopy()
+				}
+			case *corev1.ConfigMap:
+				if client.ObjectKeyFromObject(obj) == client.ObjectKeyFromObject(configMapObj) {
+					configMapObj.ObjectMeta = *v.ObjectMeta.DeepCopy()
+					configMapObj.Data = v.DeepCopy().Data
 				}
 			}
 			return nil
@@ -223,6 +230,68 @@ max_connections = '1000'
 				SyncStatus().
 				Complete()
 			Expect(err).Should(Succeed())
+		})
+
+		It("Should update revision metadata when config item is already applied", func() {
+			const (
+				oldRevision = "1"
+				newRevision = "2"
+			)
+
+			item := appsv1alpha1.ConfigurationItemDetail{
+				Name:       configSpecName,
+				ConfigSpec: synthesizedComponent.ConfigTemplates[0].DeepCopy(),
+			}
+			configurationObj.Spec.ConfigItemDetails = []appsv1alpha1.ConfigurationItemDetail{item}
+			configurationObj.Status.ConfigurationItemStatus = []appsv1alpha1.ConfigurationItemDetailStatus{
+				{
+					Name:           configSpecName,
+					Phase:          appsv1alpha1.CMergeFailedPhase,
+					UpdateRevision: oldRevision,
+				},
+			}
+
+			appliedVersion, err := json.Marshal(item)
+			Expect(err).Should(Succeed())
+			configMapObj.Annotations = map[string]string{
+				constant.ConfigAppliedVersionAnnotationKey: string(appliedVersion),
+				constant.ConfigurationRevision:             oldRevision,
+			}
+			configMapObj.Name = cfgcore.GetComponentCfgName(clusterName, mysqlCompName, configSpecName)
+			originalData := configMapObj.DeepCopy().Data
+
+			mockAPIResource(func(key client.ObjectKey, obj client.Object) (bool, error) {
+				return false, nil
+			})
+
+			reconcileTask := NewReconcilePipeline(ReconcileCtx{
+				ResourceCtx: &ResourceCtx{
+					Client:        k8sMockClient.Client(),
+					Context:       ctx,
+					Namespace:     testCtx.DefaultNamespace,
+					ClusterName:   clusterName,
+					ComponentName: mysqlCompName,
+				},
+				Cluster:              clusterObj,
+				Component:            componentObj,
+				SynthesizedComponent: synthesizedComponent,
+				PodSpec:              synthesizedComponent.PodSpec,
+			}, item, &configurationObj.Status.ConfigurationItemStatus[0], item.ConfigSpec)
+
+			err = reconcileTask.
+				ConfigMap(configSpecName).
+				ConfigConstraints(reconcileTask.ConfigSpec().ConfigConstraintRef).
+				PrepareForTemplate().
+				RerenderTemplate().
+				ApplyParameters().
+				UpdateConfigVersion(newRevision).
+				Sync().
+				Complete()
+			Expect(err).Should(Succeed())
+
+			Expect(configMapObj.Data).Should(Equal(originalData))
+			Expect(configMapObj.Annotations[constant.ConfigurationRevision]).Should(Equal(newRevision))
+			Expect(configMapObj.Annotations[constant.ConfigAppliedVersionAnnotationKey]).Should(Equal(string(appliedVersion)))
 		})
 	})
 
