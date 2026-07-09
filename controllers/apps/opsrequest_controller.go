@@ -142,9 +142,16 @@ func (r *OpsRequestReconciler) fetchCluster(reqCtx intctrlutil.RequestCtx, opsRe
 		return nil, operations.PatchOpsHandlerNotSupported(reqCtx.Ctx, r.Client, opsRes)
 	}
 	if opsBehaviour.IsClusterCreation {
-		// check if the cluster already exists
 		cluster.Name = opsRes.OpsRequest.Spec.GetClusterName()
 		cluster.Namespace = opsRes.OpsRequest.GetNamespace()
+		if opsRes.OpsRequest.GetDeletionTimestamp().IsZero() {
+			// Cluster-creation ops may run before the target Cluster exists.
+			opsRes.Cluster = cluster
+			return nil, nil
+		}
+		if err := r.Client.Get(reqCtx.Ctx, client.ObjectKeyFromObject(cluster), cluster); err != nil && !apierrors.IsNotFound(err) {
+			return intctrlutil.ResultToP(intctrlutil.CheckedRequeueWithError(err, reqCtx.Log, ""))
+		}
 		opsRes.Cluster = cluster
 		return nil, nil
 	}

@@ -37,13 +37,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
+	"github.com/apecloud/kubeblocks/controllers/apps/operations"
 	opsutil "github.com/apecloud/kubeblocks/controllers/apps/operations/util"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
+	ctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	dptypes "github.com/apecloud/kubeblocks/pkg/dataprotection/types"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/generics"
 	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
@@ -640,6 +643,55 @@ var _ = Describe("OpsRequest Controller", func() {
 				opsSlice, _ := opsutil.GetOpsRequestSliceFromCluster(tmlCluster)
 				g.Expect(opsSlice).Should(HaveLen(0))
 			})).Should(Succeed())
+		})
+
+		It("delete Running restore opsRequest when restored cluster is deleting", func() {
+			restoreClusterName := "restore-delete-" + testCtx.GetRandomStr()
+			restoreOpsName := restoreClusterName + "-ops"
+
+			By("create a deleting restored cluster")
+			restoreCluster := testapps.NewClusterFactory(testCtx.DefaultNamespace, restoreClusterName,
+				clusterDefObj.Name, clusterVersionObj.Name).
+				AddComponent(mysqlCompName, mysqlCompDefName).
+				AddFinalizers([]string{constant.DBClusterFinalizerName}).
+				Create(&testCtx).GetObject()
+			restoreClusterKey := client.ObjectKeyFromObject(restoreCluster)
+			testapps.DeleteObject(&testCtx, restoreClusterKey, restoreCluster)
+			Eventually(testapps.CheckObj(&testCtx, restoreClusterKey, func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				g.Expect(cluster.GetDeletionTimestamp().IsZero()).Should(BeFalse())
+			})).Should(Succeed())
+
+			By("create a running Restore opsRequest and mark it deleting")
+			ops := testapps.NewOpsRequestObj(restoreOpsName, testCtx.DefaultNamespace,
+				restoreClusterName, appsv1alpha1.RestoreType)
+			ops.Finalizers = []string{constant.OpsRequestFinalizerName}
+			ops.Spec.Restore = &appsv1alpha1.Restore{BackupName: "backup-for-deleting-restore-ops"}
+			Expect(testCtx.CreateObj(ctx, ops)).Should(Succeed())
+			Expect(testapps.ChangeObjStatus(&testCtx, ops, func() {
+				ops.Status.Phase = appsv1alpha1.OpsRunningPhase
+			})).Should(Succeed())
+			opsKey := client.ObjectKeyFromObject(ops)
+			testapps.DeleteObject(&testCtx, opsKey, ops)
+			Eventually(testapps.CheckObj(&testCtx, opsKey, func(g Gomega, opsRequest *appsv1alpha1.OpsRequest) {
+				g.Expect(opsRequest.GetDeletionTimestamp().IsZero()).Should(BeFalse())
+				g.Expect(opsRequest.GetFinalizers()).Should(ConsistOf(constant.OpsRequestFinalizerName))
+			})).Should(Succeed())
+
+			By("reconcile deletion and expect the opsRequest finalizer to be removed")
+			reconciler := &OpsRequestReconciler{Client: k8sClient}
+			reqCtx := ctrlutil.RequestCtx{
+				Ctx: ctx,
+				Req: reconcile.Request{NamespacedName: opsKey},
+			}
+			Eventually(func(g Gomega) {
+				result, err := (&opsControllerHandler{}).Handle(reqCtx, &operations.OpsResource{},
+					reconciler.fetchOpsRequest,
+					reconciler.fetchCluster,
+					reconciler.handleDeletion)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(result).Should(Equal(reconcile.Result{}))
+			}).Should(Succeed())
+			Eventually(testapps.CheckObjExists(&testCtx, opsKey, &appsv1alpha1.OpsRequest{}, false)).Should(Succeed())
 		})
 
 		It("cancel HorizontalScaling opsRequest which is Running", func() {
