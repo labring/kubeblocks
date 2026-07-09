@@ -1105,6 +1105,7 @@ func (r *componentWorkloadOps) updatePVCSize(pvcKey types.NamespacedName,
 				policy = corev1.PersistentVolumeReclaimDelete
 			}
 			restorePV.Spec.PersistentVolumeReclaimPolicy = policy
+			removePVRecoveryMarkers(restorePV)
 			return graphCli.Do(r.dag, pv, restorePV, model.ActionPatchPtr(), fromVertex, inDataContext4G())
 		},
 	}
@@ -1119,6 +1120,9 @@ func (r *componentWorkloadOps) updatePVCSize(pvcKey types.NamespacedName,
 	targetQuantity := vctProto.Spec.Resources.Requests[corev1.ResourceStorage]
 	if pvcNotFound && !pvNotFound {
 		// this could happen if create pvc step failed when recreating pvc
+		if !pvInVolumeExpansionRecovery(pv) {
+			return nil
+		}
 		updatePVCByRecreateFromStep(removePVClaimRefStep)
 		return nil
 	}
@@ -1146,6 +1150,26 @@ func (r *componentWorkloadOps) updatePVCSize(pvcKey types.NamespacedName,
 	// all the else means no need to update
 
 	return nil
+}
+
+func removePVRecoveryMarkers(pv *corev1.PersistentVolume) {
+	if pv.Labels != nil {
+		delete(pv.Labels, constant.PVCNameLabelKey)
+	}
+	if pv.Annotations != nil {
+		delete(pv.Annotations, constant.PVLastClaimPolicyAnnotationKey)
+	}
+}
+
+func pvInVolumeExpansionRecovery(pv *corev1.PersistentVolume) bool {
+	if pv.Labels == nil || pv.Annotations == nil {
+		return false
+	}
+	_, hasPVCNameLabel := pv.Labels[constant.PVCNameLabelKey]
+	_, hasLastClaimPolicy := pv.Annotations[constant.PVLastClaimPolicyAnnotationKey]
+	return hasPVCNameLabel &&
+		hasLastClaimPolicy &&
+		pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimRetain
 }
 
 // buildProtoITSWorkloadVertex builds protoITS workload vertex
