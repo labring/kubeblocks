@@ -20,17 +20,25 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package apps
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
+	"github.com/apecloud/kubeblocks/pkg/controller/graph"
+	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 func TestMemberJoinEnabled(t *testing.T) {
@@ -137,6 +145,173 @@ func TestDetectPodsToMemberJoin(t *testing.T) {
 			t.Fatalf("unexpected pods included: %v", sets.List(got))
 		}
 	})
+}
+
+func TestUpdatePVCSizeRestoresPVPolicyAndClearsRecoveryMarkers(t *testing.T) {
+	const (
+		namespace = "default"
+		pvcName   = "data-test-0"
+		pvName    = "pv-data-test-0"
+	)
+
+	storage := resource.MustParse("2Gi")
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			VolumeName: pvName,
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storage,
+				},
+			},
+		},
+	}
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				constant.PVCNameLabelKey: pvcName,
+			},
+			Annotations: map[string]string{
+				constant.PVLastClaimPolicyAnnotationKey: string(corev1.PersistentVolumeReclaimDelete),
+			},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
+			ClaimRef: &corev1.ObjectReference{
+				Namespace: namespace,
+				Name:      pvcName,
+			},
+		},
+	}
+	vctProto := &corev1.PersistentVolumeClaimTemplate{
+		Spec: corev1.PersistentVolumeClaimSpec{
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storage,
+				},
+			},
+		},
+	}
+
+	dag := graph.NewDAG()
+	protoITS := &workloads.InstanceSet{}
+	dag.AddVertex(&model.ObjectVertex{Obj: protoITS})
+	op := &componentWorkloadOps{
+		reqCtx: intctrlutil.RequestCtx{
+			Ctx: context.Background(),
+		},
+		cli:      fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(pv).Build(),
+		dag:      dag,
+		protoITS: protoITS,
+	}
+
+	if err := op.updatePVCSize(
+		types.NamespacedName{Namespace: namespace, Name: pvcName},
+		pvc,
+		false,
+		vctProto,
+	); err != nil {
+		t.Fatalf("updatePVCSize failed: %v", err)
+	}
+
+	restoredPV := findPatchedPV(dag, pvName)
+	if restoredPV == nil {
+		t.Fatal("expected a PV patch to restore reclaim policy")
+	}
+	if restoredPV.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimDelete {
+		t.Fatalf("expected reclaim policy %q, got %q",
+			corev1.PersistentVolumeReclaimDelete, restoredPV.Spec.PersistentVolumeReclaimPolicy)
+	}
+	if _, ok := restoredPV.Labels[constant.PVCNameLabelKey]; ok {
+		t.Fatalf("expected recovery label %q to be removed", constant.PVCNameLabelKey)
+	}
+	if _, ok := restoredPV.Annotations[constant.PVLastClaimPolicyAnnotationKey]; ok {
+		t.Fatalf("expected recovery annotation %q to be removed", constant.PVLastClaimPolicyAnnotationKey)
+	}
+}
+
+func TestUpdatePVCSizeIgnoresStaleRecoveryMarkers(t *testing.T) {
+	const (
+		namespace = "default"
+		pvcName   = "data-test-0"
+		pvName    = "pv-data-test-0"
+	)
+
+	storage := resource.MustParse("2Gi")
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				constant.PVCNameLabelKey: pvcName,
+			},
+			Annotations: map[string]string{
+				constant.PVLastClaimPolicyAnnotationKey: string(corev1.PersistentVolumeReclaimDelete),
+			},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
+			ClaimRef: &corev1.ObjectReference{
+				Namespace:       namespace,
+				Name:            pvcName,
+				UID:             "current-pvc",
+				ResourceVersion: "123",
+			},
+		},
+	}
+	vctProto := &corev1.PersistentVolumeClaimTemplate{
+		Spec: corev1.PersistentVolumeClaimSpec{
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storage,
+				},
+			},
+		},
+	}
+
+	dag := graph.NewDAG()
+	protoITS := &workloads.InstanceSet{}
+	dag.AddVertex(&model.ObjectVertex{Obj: protoITS})
+	op := &componentWorkloadOps{
+		reqCtx: intctrlutil.RequestCtx{
+			Ctx: context.Background(),
+		},
+		cli:      fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(pv).Build(),
+		dag:      dag,
+		protoITS: protoITS,
+	}
+
+	if err := op.updatePVCSize(
+		types.NamespacedName{Namespace: namespace, Name: pvcName},
+		&corev1.PersistentVolumeClaim{},
+		true,
+		vctProto,
+	); err != nil {
+		t.Fatalf("updatePVCSize failed: %v", err)
+	}
+
+	if patchedPV := findPatchedPV(dag, pvName); patchedPV != nil {
+		t.Fatal("expected stale recovery markers not to trigger a PV patch")
+	}
+}
+
+func findPatchedPV(dag *graph.DAG, pvName string) *corev1.PersistentVolume {
+	for _, vertex := range dag.Vertices() {
+		objVertex, ok := vertex.(*model.ObjectVertex)
+		if !ok || objVertex.Action == nil || *objVertex.Action != model.PATCH {
+			continue
+		}
+		candidate, ok := objVertex.Obj.(*corev1.PersistentVolume)
+		if ok && candidate.Name == pvName {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func newMemberJoinOps(replicas int32, members []workloads.MemberStatus, desired ...string) *componentWorkloadOps {
