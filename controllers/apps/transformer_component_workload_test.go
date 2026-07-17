@@ -20,14 +20,30 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/storage/names"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/builder"
+	"github.com/apecloud/kubeblocks/pkg/controller/component"
+	"github.com/apecloud/kubeblocks/pkg/controller/graph"
+	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 const (
@@ -171,3 +187,119 @@ var _ = Describe("transformer component workload", func() {
 		})
 	})
 })
+
+func TestComponentWorkloadHorizontalScalePVCDeletion(t *testing.T) {
+	const (
+		clusterName   = "cluster"
+		componentName = "component"
+		volumeName    = "data"
+	)
+	tests := []struct {
+		name            string
+		currentReplicas int32
+		desiredReplicas int32
+		readyReplicas   int32
+		wantPVCDeleted  bool
+	}{
+		{
+			name:            "delete excess PVC when ready replicas already match desired replicas",
+			currentReplicas: 2,
+			desiredReplicas: 1,
+			readyReplicas:   1,
+			wantPVCDeleted:  true,
+		},
+		{
+			name:            "retain PVC when scaling to zero",
+			currentReplicas: 1,
+			desiredReplicas: 0,
+			readyReplicas:   0,
+			wantPVCDeleted:  false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			g := NewWithT(t)
+			rsmName := fmt.Sprintf("%s-%s", clusterName, componentName)
+			labels := constant.GetComponentWellKnownLabels(clusterName, componentName)
+			pods := []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      fmt.Sprintf("%s-0", rsmName),
+						Labels:    labels,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      fmt.Sprintf("%s-1", rsmName),
+						Labels:    labels,
+					},
+				},
+			}
+			pvcOrdinal := test.currentReplicas - 1
+			pvc := builder.NewPVCBuilder(
+				namespace,
+				fmt.Sprintf("%s-%s-%d", volumeName, rsmName, pvcOrdinal),
+			).GetObject()
+			clientBuilder := fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithObjects(&pods[0], pvc)
+			if test.currentReplicas > 1 {
+				clientBuilder = clientBuilder.WithObjects(&pods[1])
+			}
+			cli := clientBuilder.Build()
+			runningRSM := &v1alpha1.ReplicatedStateMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+					Name:      rsmName,
+				},
+				Spec: v1alpha1.ReplicatedStateMachineSpec{
+					Replicas:           &test.currentReplicas,
+					RsmTransformPolicy: v1alpha1.ToSts,
+					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+						{ObjectMeta: metav1.ObjectMeta{Name: volumeName}},
+					},
+				},
+				Status: v1alpha1.ReplicatedStateMachineStatus{
+					StatefulSetStatus: appsv1.StatefulSetStatus{
+						ReadyReplicas: test.readyReplicas,
+					},
+				},
+			}
+			cluster := &appsv1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+					Name:      clusterName,
+				},
+			}
+			synthesizedComp := &component.SynthesizedComponent{
+				Namespace:          namespace,
+				ClusterName:        clusterName,
+				Name:               componentName,
+				Replicas:           test.desiredReplicas,
+				RsmTransformPolicy: v1alpha1.ToSts,
+			}
+			dag := graph.NewDAG()
+			graphCli := model.NewGraphClient(cli)
+			graphCli.Root(dag, cluster.DeepCopy(), cluster, model.ActionStatusPtr())
+			workloadOps := newComponentWorkloadOps(
+				intctrlutil.RequestCtx{
+					Ctx:      context.Background(),
+					Log:      logr.Discard(),
+					Recorder: record.NewFakeRecorder(1),
+				},
+				cli,
+				cluster,
+				synthesizedComp,
+				runningRSM,
+				nil,
+				dag,
+			)
+
+			g.Expect(workloadOps.horizontalScale()).To(Succeed())
+			g.Expect(graphCli.IsAction(dag, pvc, model.ActionDeletePtr())).To(Equal(test.wantPVCDeleted))
+		})
+	}
+}
