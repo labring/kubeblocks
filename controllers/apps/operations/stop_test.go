@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	opsutil "github.com/apecloud/kubeblocks/controllers/apps/operations/util"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	"github.com/apecloud/kubeblocks/pkg/generics"
 	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
@@ -159,9 +160,13 @@ var _ = Describe("Stop OpsRequest", func() {
 			runAction(reqCtx, opsRes, appsv1alpha1.OpsPendingPhase)
 
 			By("create 'Stop' opsRequest for all components")
-			createStopOpsRequest(opsRes, defaultCompName)
+			stopOps := createStopOpsRequest(opsRes, defaultCompName)
+			opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(opsRes.Cluster)
+			Expect(err).ShouldNot(HaveOccurred())
+			opsSlice = append(opsSlice, appsv1alpha1.OpsRecorder{Name: stopOps.Name, Type: appsv1alpha1.StopType})
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, opsSlice)).Should(Succeed())
 			stopHandler := StopOpsHandler{}
-			err := stopHandler.Action(reqCtx, k8sClient, opsRes)
+			err = stopHandler.Action(reqCtx, k8sClient, opsRes)
 			Expect(err).ShouldNot(HaveOccurred())
 
 			By("expect the 'Restart' opsRequest with intersection component to be Aborted")
@@ -171,12 +176,306 @@ var _ = Describe("Stop OpsRequest", func() {
 			Eventually(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(ops2))).Should(Equal(appsv1alpha1.OpsCreatingPhase))
 
 			By("expect the 'Start' opsRequest to be Aborted")
-			Eventually(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(ops1))).Should(Equal(appsv1alpha1.OpsAbortedPhase))
+			Eventually(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(ops3))).Should(Equal(appsv1alpha1.OpsAbortedPhase))
+		})
+
+		It("Test force stop OpsRequest bypasses running start OpsRequest", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create a running 'Start' opsRequest")
+			startOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("start-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.StartType))
+			opsRes.OpsRequest = startOps
+			Expect(testapps.ChangeObjStatus(&testCtx, startOps, func() {
+				startOps.Status.Phase = appsv1alpha1.OpsPendingPhase
+			})).Should(Succeed())
+			runAction(reqCtx, opsRes, appsv1alpha1.OpsCreatingPhase)
+
+			By("create force 'Stop' opsRequest while start holds the cluster queue")
+			stopOps := createForceStopOpsRequest(opsRes)
+			runAction(reqCtx, opsRes, appsv1alpha1.OpsCreatingPhase)
+
+			By("expect force stop ops to bypass the start ops in queue")
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(2))
+				g.Expect(opsSlice[0].Name).Should(Equal(startOps.Name))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				g.Expect(opsSlice[1].Name).Should(Equal(stopOps.Name))
+				g.Expect(opsSlice[1].InQueue).Should(BeFalse())
+			})).Should(Succeed())
+
+			By("execute stop action and expect start ops to be aborted")
+			_, err := GetOpsManager().Do(reqCtx, k8sClient, opsRes)
+			Expect(err).ShouldNot(HaveOccurred())
+			Eventually(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(startOps))).Should(Equal(appsv1alpha1.OpsAbortedPhase))
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				for _, comp := range cluster.Spec.ComponentSpecs {
+					g.Expect(comp.Stop).ShouldNot(BeNil())
+					g.Expect(*comp.Stop).Should(BeTrue())
+				}
+			})).Should(Succeed())
+		})
+
+		It("Test force stop OpsRequest waits for running horizontal scaling OpsRequest", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create a running 'HorizontalScaling' opsRequest in the cluster queue")
+			hscaleOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("hscale-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.HorizontalScalingType))
+			Expect(testapps.ChangeObjStatus(&testCtx, hscaleOps, func() {
+				hscaleOps.Status.Phase = appsv1alpha1.OpsRunningPhase
+			})).Should(Succeed())
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{{
+				Name: hscaleOps.Name,
+				Type: appsv1alpha1.HorizontalScalingType,
+			}})).Should(Succeed())
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsRes.Cluster = cluster
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(1))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+			})).Should(Succeed())
+
+			By("create force 'Stop' opsRequest while horizontal scaling holds the cluster queue")
+			stopOps := createForceStopOpsRequest(opsRes)
+			_, err := GetOpsManager().Do(reqCtx, k8sClient, opsRes)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("expect force stop ops to stay queued behind horizontal scaling")
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(2))
+				g.Expect(opsSlice[0].Name).Should(Equal(hscaleOps.Name))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				g.Expect(opsSlice[1].Name).Should(Equal(stopOps.Name))
+				g.Expect(opsSlice[1].InQueue).Should(BeTrue())
+			})).Should(Succeed())
+		})
+
+		It("Test force stop OpsRequest waits for queued non-start OpsRequest", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create a running 'Start' opsRequest and a queued 'HorizontalScaling' opsRequest")
+			startOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("start-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.StartType))
+			hscaleOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("hscale-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.HorizontalScalingType))
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{
+				{
+					Name: startOps.Name,
+					Type: appsv1alpha1.StartType,
+				},
+				{
+					Name:    hscaleOps.Name,
+					Type:    appsv1alpha1.HorizontalScalingType,
+					InQueue: true,
+				},
+			})).Should(Succeed())
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsRes.Cluster = cluster
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(2))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				g.Expect(opsSlice[1].InQueue).Should(BeTrue())
+			})).Should(Succeed())
+
+			By("create force 'Stop' opsRequest while horizontal scaling is already queued before it")
+			stopOps := createForceStopOpsRequest(opsRes)
+			_, err := GetOpsManager().Do(reqCtx, k8sClient, opsRes)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("expect force stop ops to stay queued behind the queued horizontal scaling ops")
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(3))
+				g.Expect(opsSlice[0].Name).Should(Equal(startOps.Name))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				g.Expect(opsSlice[1].Name).Should(Equal(hscaleOps.Name))
+				g.Expect(opsSlice[1].InQueue).Should(BeTrue())
+				g.Expect(opsSlice[2].Name).Should(Equal(stopOps.Name))
+				g.Expect(opsSlice[2].InQueue).Should(BeTrue())
+			})).Should(Succeed())
+		})
+
+		DescribeTable("Test force stop OpsRequest waits for other running OpsRequest",
+			func(blockingOpsType appsv1alpha1.OpsType) {
+				By("init operations resources")
+				opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+				reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+				By("create a running opsRequest in the cluster queue")
+				blockingOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("blocking-ops-"+testCtx.GetRandomStr(),
+					testCtx.DefaultNamespace, clusterName, blockingOpsType))
+				Expect(testapps.ChangeObjStatus(&testCtx, blockingOps, func() {
+					blockingOps.Status.Phase = appsv1alpha1.OpsRunningPhase
+				})).Should(Succeed())
+				Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{{
+					Name: blockingOps.Name,
+					Type: blockingOpsType,
+				}})).Should(Succeed())
+				Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+					opsRes.Cluster = cluster
+					opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+					g.Expect(err).ShouldNot(HaveOccurred())
+					g.Expect(opsSlice).Should(HaveLen(1))
+					g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				})).Should(Succeed())
+
+				By("create force 'Stop' opsRequest while the other opsRequest holds the cluster queue")
+				stopOps := createForceStopOpsRequest(opsRes)
+				_, err := GetOpsManager().Do(reqCtx, k8sClient, opsRes)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				By("expect force stop ops to stay queued behind the other opsRequest")
+				Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+					opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+					g.Expect(err).ShouldNot(HaveOccurred())
+					g.Expect(opsSlice).Should(HaveLen(2))
+					g.Expect(opsSlice[0].Name).Should(Equal(blockingOps.Name))
+					g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+					g.Expect(opsSlice[1].Name).Should(Equal(stopOps.Name))
+					g.Expect(opsSlice[1].InQueue).Should(BeTrue())
+				})).Should(Succeed())
+			},
+			Entry("restart", appsv1alpha1.RestartType),
+			Entry("vertical scaling", appsv1alpha1.VerticalScalingType),
+		)
+
+		It("Test force stop action does not abort horizontal scaling OpsRequest", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create a running 'HorizontalScaling' opsRequest")
+			hscaleOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("hscale-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.HorizontalScalingType))
+			Expect(testapps.ChangeObjStatus(&testCtx, hscaleOps, func() {
+				hscaleOps.Status.Phase = appsv1alpha1.OpsRunningPhase
+			})).Should(Succeed())
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{{
+				Name: hscaleOps.Name,
+				Type: appsv1alpha1.HorizontalScalingType,
+			}})).Should(Succeed())
+
+			By("invoke force stop action directly")
+			stopOps := createForceStopOpsRequest(opsRes)
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{
+				{Name: hscaleOps.Name, Type: appsv1alpha1.HorizontalScalingType},
+				{Name: stopOps.Name, Type: appsv1alpha1.StopType},
+			})).Should(Succeed())
+			Expect(StopOpsHandler{}.Action(reqCtx, k8sClient, opsRes)).Should(Succeed())
+
+			By("expect horizontal scaling to remain running")
+			Consistently(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(hscaleOps))).Should(Equal(appsv1alpha1.OpsRunningPhase))
+		})
+
+		It("Test force stop action does not abort a later start from a stale queue", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create force stop before the resume start OpsRequest")
+			stopOps := createForceStopOpsRequest(opsRes)
+			startOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("resume-start-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.StartType))
+			Expect(testapps.ChangeObjStatus(&testCtx, startOps, func() {
+				startOps.Status.Phase = appsv1alpha1.OpsPendingPhase
+			})).Should(Succeed())
+			stopOps.CreationTimestamp = startOps.CreationTimestamp
+
+			By("simulate a stale cluster queue that contains the later start but not the current stop")
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{{
+				Name: startOps.Name,
+				Type: appsv1alpha1.StartType,
+			}})).Should(Succeed())
+
+			By("expect the stale queue to be retried without aborting the later start")
+			Expect(StopOpsHandler{}.Action(reqCtx, k8sClient, opsRes)).Should(MatchError(ContainSubstring("missing from the cluster operations queue")))
+			Consistently(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(startOps))).Should(Equal(appsv1alpha1.OpsPendingPhase))
+
+			By("retry with a fresh queue and expect the later start to remain pending")
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, []appsv1alpha1.OpsRecorder{
+				{Name: stopOps.Name, Type: appsv1alpha1.StopType},
+				{Name: startOps.Name, Type: appsv1alpha1.StartType, InQueue: true},
+			})).Should(Succeed())
+			Expect(StopOpsHandler{}.Action(reqCtx, k8sClient, opsRes)).Should(Succeed())
+			Consistently(testapps.GetOpsRequestPhase(&testCtx, client.ObjectKeyFromObject(startOps))).Should(Equal(appsv1alpha1.OpsPendingPhase))
+		})
+
+		It("Test specific component stop OpsRequest waits for running start OpsRequest", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+
+			By("create a running 'Start' opsRequest")
+			startOps := testapps.CreateOpsRequest(ctx, testCtx, testapps.NewOpsRequestObj("start-ops-"+randomStr,
+				testCtx.DefaultNamespace, clusterName, appsv1alpha1.StartType))
+			opsRes.OpsRequest = startOps
+			Expect(testapps.ChangeObjStatus(&testCtx, startOps, func() {
+				startOps.Status.Phase = appsv1alpha1.OpsPendingPhase
+			})).Should(Succeed())
+			runAction(reqCtx, opsRes, appsv1alpha1.OpsCreatingPhase)
+
+			By("create component-level 'Stop' opsRequest while start holds the cluster queue")
+			stopOps := createStopOpsRequest(opsRes, defaultCompName)
+			_, err := GetOpsManager().Do(reqCtx, k8sClient, opsRes)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("expect component-level stop ops to stay queued")
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(opsRes.Cluster), func(g Gomega, cluster *appsv1alpha1.Cluster) {
+				opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(cluster)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(opsSlice).Should(HaveLen(2))
+				g.Expect(opsSlice[0].Name).Should(Equal(startOps.Name))
+				g.Expect(opsSlice[0].InQueue).Should(BeFalse())
+				g.Expect(opsSlice[1].Name).Should(Equal(stopOps.Name))
+				g.Expect(opsSlice[1].InQueue).Should(BeTrue())
+			})).Should(Succeed())
+		})
+
+		It("Test stop OpsRequest is allowed when cluster is Creating", func() {
+			By("init operations resources")
+			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)
+			Expect(testapps.ChangeObjStatus(&testCtx, opsRes.Cluster, func() {
+				opsRes.Cluster.Status.Phase = appsv1alpha1.CreatingClusterPhase
+			})).Should(Succeed())
+
+			By("create 'Stop' opsRequest")
+			createStopOpsRequest(opsRes)
+
+			By("expect cluster phase validation to pass")
+			Expect(opsRes.OpsRequest.ValidateClusterPhase(opsRes.Cluster)).Should(Succeed())
+
+			By("expect stop ops can enter creating phase")
+			reqCtx := intctrlutil.RequestCtx{Ctx: ctx}
+			runAction(reqCtx, opsRes, appsv1alpha1.OpsCreatingPhase)
 		})
 	})
 })
 
 func createStopOpsRequest(opsRes *OpsResource, stopCompNames ...string) *appsv1alpha1.OpsRequest {
+	return createStopOpsRequestWithMutator(opsRes, nil, stopCompNames...)
+}
+
+func createForceStopOpsRequest(opsRes *OpsResource, stopCompNames ...string) *appsv1alpha1.OpsRequest {
+	return createStopOpsRequestWithMutator(opsRes, func(ops *appsv1alpha1.OpsRequest) {
+		ops.Spec.Force = true
+	}, stopCompNames...)
+}
+
+func createStopOpsRequestWithMutator(opsRes *OpsResource, mutate func(*appsv1alpha1.OpsRequest), stopCompNames ...string) *appsv1alpha1.OpsRequest {
 	By("create Stop opsRequest")
 	ops := testapps.NewOpsRequestObj("stop-ops-"+testCtx.GetRandomStr(), testCtx.DefaultNamespace,
 		opsRes.Cluster.Name, appsv1alpha1.StopType)
@@ -187,6 +486,9 @@ func createStopOpsRequest(opsRes *OpsResource, stopCompNames ...string) *appsv1a
 		})
 	}
 	ops.Spec.StopList = stopList
+	if mutate != nil {
+		mutate(ops)
+	}
 	opsRes.OpsRequest = testapps.CreateOpsRequest(ctx, testCtx, ops)
 	// set ops phase to Pending
 	opsRes.OpsRequest.Status.Phase = appsv1alpha1.OpsPendingPhase

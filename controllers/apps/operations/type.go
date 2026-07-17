@@ -68,6 +68,10 @@ type OpsBehaviour struct {
 	// QueueWithSelf indicates that the operation is queued for execution within opsType scope.
 	QueueBySelf bool
 
+	// ForceBypassOpsTypes lists the prior ops types that a forced opsRequest may bypass.
+	// Empty preserves the original behavior and allows a forced opsRequest to bypass all prior ops.
+	ForceBypassOpsTypes []appsv1alpha1.OpsType
+
 	OpsHandler OpsHandler
 }
 
