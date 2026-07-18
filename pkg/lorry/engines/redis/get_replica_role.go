@@ -21,60 +21,212 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/apecloud/kubeblocks/pkg/lorry/dcs"
 	"github.com/apecloud/kubeblocks/pkg/lorry/engines/models"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 func (mgr *Manager) GetReplicaRole(ctx context.Context, _ *dcs.Cluster) (string, error) {
-	// To ensure that the role information obtained through subscription is always delivered.
-	if mgr.role != "" && mgr.roleSubscribeUpdateTime+mgr.roleProbePeriod*2 < time.Now().Unix() {
-		return mgr.role, nil
+	getRoleFromRedisClient := func() (string, error) {
+		return mgr.getLocalRedisRole(ctx)
 	}
 
-	// when we can't get role from sentinel, we query redis instead
-	getRoleFromRedisClient := func() (string, error) {
-		var role string
-		result, err := mgr.client.Info(ctx, "Replication").Result()
+	// To ensure that the role information obtained through subscription is always delivered.
+	if mgr.role != "" && mgr.roleSubscribeUpdateTime+mgr.roleProbePeriod*2 < time.Now().Unix() {
+		if mgr.role != models.PRIMARY {
+			return mgr.role, nil
+		}
+		role, err := getRoleFromRedisClient()
 		if err != nil {
-			mgr.Logger.Info("Role query failed", "error", err.Error())
-			return role, err
-		} else {
-			// split the result into lines
-			lines := strings.Split(result, "\r\n")
-			// find the line with role
-			for _, line := range lines {
-				if strings.HasPrefix(line, "role:") {
-					role = strings.Split(line, ":")[1]
-					break
-				}
-			}
+			return "", err
 		}
-		if role == models.MASTER {
+		if role == models.PRIMARY {
 			return models.PRIMARY, nil
-		} else {
-			return models.SECONDARY, nil
 		}
+		mgr.Logger.Info("subscribed primary role is not local redis master", "localRole", role)
+		return models.SECONDARY, nil
 	}
 
 	if mgr.sentinelClient == nil {
 		return getRoleFromRedisClient()
 	}
 
-	// We use the role obtained from Sentinel as the sole source of truth.
-	masterAddr, err := mgr.sentinelClient.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
-	if err != nil {
+	masterName, err := mgr.getSentinelMasterName(ctx)
+	if err != nil && !mgr.useSentinelMajority() {
 		return getRoleFromRedisClient()
+	} else if err != nil {
+		return "", err
 	}
 
-	masterName := strings.Split(masterAddr[0], ".")[0]
 	// if current member is not master from sentinel, just return secondary to avoid double master
 	if masterName != mgr.CurrentMemberName {
 		return models.SECONDARY, nil
 	}
+	// Sentinel can temporarily return a stale or split-brain master during node restarts.
+	// Only report primary when the local Redis process also confirms it is master.
+	role, err := getRoleFromRedisClient()
+	if err != nil {
+		return "", err
+	}
+	if role != models.PRIMARY {
+		mgr.Logger.Info("sentinel master is not local redis master", "sentinelMaster", masterName, "localRole", role)
+		return models.SECONDARY, nil
+	}
 	return models.PRIMARY, nil
+}
+
+func (mgr *Manager) getLocalRedisRole(ctx context.Context) (string, error) {
+	result, err := mgr.client.Info(ctx, "Replication").Result()
+	if err != nil {
+		mgr.Logger.Info("Role query failed", "error", err.Error())
+		return "", err
+	}
+	if parseRedisReplicationRole(result) == models.MASTER {
+		return models.PRIMARY, nil
+	}
+	return models.SECONDARY, nil
+}
+
+func (mgr *Manager) IsLeader(ctx context.Context, _ *dcs.Cluster) (bool, error) {
+	role, err := mgr.getLocalRedisRole(ctx)
+	if err != nil {
+		return false, err
+	}
+	return role == models.PRIMARY, nil
+}
+
+func (mgr *Manager) getSentinelMasterName(ctx context.Context) (string, error) {
+	if mgr.useSentinelMajority() {
+		return mgr.getSentinelMajorityMasterName(ctx)
+	}
+	masterAddr, err := mgr.sentinelClient.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
+	if err != nil {
+		return "", err
+	}
+	_, name, err := parseSentinelMaster(masterAddr)
+	return name, err
+}
+
+func (mgr *Manager) useSentinelMajority() bool {
+	return viper.IsSet("SENTINEL_POD_NAME_LIST") && viper.IsSet("SENTINEL_HEADLESS_SERVICE_NAME")
+}
+
+func (mgr *Manager) getSentinelMajorityMasterName(ctx context.Context) (string, error) {
+	pods := splitCSV(viper.GetString("SENTINEL_POD_NAME_LIST"))
+	if len(pods) == 0 {
+		return "", fmt.Errorf("empty SENTINEL_POD_NAME_LIST")
+	}
+
+	headlessSvc := viper.GetString("SENTINEL_HEADLESS_SERVICE_NAME")
+	port := "26379"
+	if viper.IsSet("REDIS_SENTINEL_HOST_NETWORK_PORT") {
+		port = viper.GetString("REDIS_SENTINEL_HOST_NETWORK_PORT")
+	}
+
+	type masterVote struct {
+		count int
+		name  string
+	}
+	votes := map[string]masterVote{}
+	var lastErr error
+	for _, pod := range pods {
+		client := mgr.newSentinelClientForAddr(fmt.Sprintf("%s.%s:%s", pod, headlessSvc, port))
+		masterAddr, err := client.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
+		_ = client.Close()
+		if err != nil {
+			lastErr = err
+			mgr.Logger.Info("query sentinel master failed", "sentinel", pod, "error", err.Error())
+			continue
+		}
+		masterKey, masterName, err := parseSentinelMaster(masterAddr)
+		if err != nil {
+			lastErr = err
+			mgr.Logger.Info("query sentinel master returned invalid address", "sentinel", pod, "error", err.Error())
+			continue
+		}
+		vote := votes[masterKey]
+		vote.count++
+		vote.name = masterName
+		votes[masterKey] = vote
+	}
+
+	quorum := len(pods)/2 + 1
+	var winner masterVote
+	for _, vote := range votes {
+		if vote.count > winner.count {
+			winner = vote
+		}
+	}
+	if winner.count >= quorum {
+		return winner.name, nil
+	}
+	if len(votes) == 0 && lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("redis sentinels do not agree on master: votes=%d quorum=%d", len(votes), quorum)
+}
+
+func (mgr *Manager) newSentinelClientForAddr(addr string) *goredis.SentinelClient {
+	s := mgr.clientSettings
+	opt := &goredis.Options{
+		DB:              s.DB,
+		Addr:            addr,
+		Password:        s.Password,
+		Username:        s.Username,
+		MaxRetries:      s.RedisMaxRetries,
+		MaxRetryBackoff: time.Duration(s.RedisMaxRetryInterval),
+		MinRetryBackoff: time.Duration(s.RedisMinRetryInterval),
+		DialTimeout:     time.Duration(s.DialTimeout),
+		ReadTimeout:     time.Duration(s.ReadTimeout),
+		WriteTimeout:    time.Duration(s.WriteTimeout),
+		PoolSize:        s.PoolSize,
+		MinIdleConns:    s.MinIdleConns,
+		PoolTimeout:     time.Duration(s.PoolTimeout),
+	}
+	return goredis.NewSentinelClient(opt)
+}
+
+func parseRedisReplicationRole(info string) string {
+	for _, line := range strings.FieldsFunc(info, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "role:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "role:"))
+		}
+	}
+	return ""
+}
+
+func parseRedisHostName(host string) string {
+	return strings.Split(host, ".")[0]
+}
+
+func parseSentinelMaster(masterAddr []string) (string, string, error) {
+	if len(masterAddr) < 2 || strings.TrimSpace(masterAddr[0]) == "" || strings.TrimSpace(masterAddr[1]) == "" {
+		return "", "", fmt.Errorf("invalid sentinel master address: %v", masterAddr)
+	}
+	host := strings.TrimSpace(masterAddr[0])
+	port := strings.TrimSpace(masterAddr[1])
+	return host + ":" + port, parseRedisHostName(host), nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	results := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			results = append(results, part)
+		}
+	}
+	return results
 }
 
 func (mgr *Manager) SubscribeRoleChange(ctx context.Context) {
