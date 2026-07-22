@@ -138,7 +138,7 @@ func addTestVolumeMount(spec *corev1.PodSpec, containerName string) {
 	}
 }
 
-func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
+func TestUpdateConfigPayloadUsesEffectivePrimaryContainerResources(t *testing.T) {
 	g := NewWithT(t)
 	const volumeName = "redis-config"
 	configSpec := appsv1alpha1.ComponentConfigSpec{
@@ -158,6 +158,9 @@ func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
 	}
 	synthesizedComponent := &component.SynthesizedComponent{
 		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			},
 			Requests: corev1.ResourceList{
 				corev1.ResourceMemory: resource.MustParse("1Gi"),
 			},
@@ -167,8 +170,11 @@ func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
 				{
 					Name: "redis",
 					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
+						Limits: corev1.ResourceList{
 							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("256Mi"),
 						},
 					},
 				},
@@ -192,20 +198,24 @@ func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
 	g.Expect(err).ShouldNot(HaveOccurred())
 	g.Expect(updated).Should(BeTrue())
 	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
-		"limits": nil,
-		"requests": map[string]interface{}{
+		"limits": map[string]interface{}{
 			"memory": "4Gi",
+		},
+		"requests": map[string]interface{}{
+			"memory": "256Mi",
 		},
 	}))
 
-	synthesizedComponent.PodSpec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	synthesizedComponent.PodSpec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
 	updated, err = UpdateConfigPayload(&config, synthesizedComponent)
 	g.Expect(err).ShouldNot(HaveOccurred())
 	g.Expect(updated).Should(BeTrue())
 	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
-		"limits": nil,
-		"requests": map[string]interface{}{
+		"limits": map[string]interface{}{
 			"memory": "8Gi",
+		},
+		"requests": map[string]interface{}{
+			"memory": "256Mi",
 		},
 	}))
 
@@ -218,7 +228,9 @@ func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
 	g.Expect(err).ShouldNot(HaveOccurred())
 	g.Expect(updated).Should(BeTrue())
 	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
-		"limits": nil,
+		"limits": map[string]interface{}{
+			"memory": "2Gi",
+		},
 		"requests": map[string]interface{}{
 			"memory": "1Gi",
 		},
