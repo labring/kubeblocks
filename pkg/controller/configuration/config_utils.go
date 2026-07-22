@@ -272,7 +272,8 @@ func UpdateConfigPayload(config *appsv1alpha1.ConfigurationSpec, component *comp
 		configSpec := &config.ConfigItemDetails[i]
 		// check v-scale operation
 		if enableVScaleTrigger(configSpec.ConfigSpec) {
-			resourcePayload := intctrlutil.ResourcesPayloadForComponent(component.Resources)
+			resources := effectiveComponentResources(component)
+			resourcePayload := intctrlutil.ResourcesPayloadForComponent(resources)
 			ret, err := intctrlutil.CheckAndPatchPayload(configSpec, constant.ComponentResourcePayload, resourcePayload)
 			if err != nil {
 				return false, err
@@ -289,6 +290,14 @@ func UpdateConfigPayload(config *appsv1alpha1.ConfigurationSpec, component *comp
 		}
 	}
 	return updated, nil
+}
+
+func effectiveComponentResources(component *component.SynthesizedComponent) corev1.ResourceRequirements {
+	resources := component.Resources
+	if component.PodSpec == nil || len(component.PodSpec.Containers) == 0 {
+		return resources
+	}
+	return component.PodSpec.Containers[0].Resources
 }
 
 func validRerenderResources(configSpec *appsv1alpha1.ComponentConfigSpec) bool {

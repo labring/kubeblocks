@@ -20,13 +20,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configuration
 
 import (
+	"testing"
+
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
@@ -132,4 +136,91 @@ func addTestVolumeMount(spec *corev1.PodSpec, containerName string) {
 			})
 		return
 	}
+}
+
+func TestUpdateConfigPayloadUsesEffectiveComponentResources(t *testing.T) {
+	g := NewWithT(t)
+	const volumeName = "redis-config"
+	configSpec := appsv1alpha1.ComponentConfigSpec{
+		ComponentTemplateSpec: appsv1alpha1.ComponentTemplateSpec{
+			Name:       "redis-config",
+			VolumeName: volumeName,
+		},
+		ReRenderResourceTypes: []appsv1alpha1.RerenderResourceType{
+			appsv1alpha1.ComponentVScaleType,
+		},
+	}
+	config := appsv1alpha1.ConfigurationSpec{
+		ConfigItemDetails: []appsv1alpha1.ConfigurationItemDetail{{
+			Name:       configSpec.Name,
+			ConfigSpec: configSpec.DeepCopy(),
+		}},
+	}
+	synthesizedComponent := &component.SynthesizedComponent{
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("1Gi"),
+			},
+		},
+		PodSpec: &corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "redis",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+					},
+				},
+				{
+					Name: "config-sidecar",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("128Mi"),
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      volumeName,
+						MountPath: "/etc/conf",
+					}},
+				},
+			},
+		},
+	}
+
+	updated, err := UpdateConfigPayload(&config, synthesizedComponent)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeTrue())
+	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
+		"limits": nil,
+		"requests": map[string]interface{}{
+			"memory": "4Gi",
+		},
+	}))
+
+	synthesizedComponent.PodSpec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	updated, err = UpdateConfigPayload(&config, synthesizedComponent)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeTrue())
+	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
+		"limits": nil,
+		"requests": map[string]interface{}{
+			"memory": "8Gi",
+		},
+	}))
+
+	updated, err = UpdateConfigPayload(&config, synthesizedComponent)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeFalse())
+
+	synthesizedComponent.PodSpec = nil
+	updated, err = UpdateConfigPayload(&config, synthesizedComponent)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeTrue())
+	g.Expect(config.ConfigItemDetails[0].Payload.Data[constant.ComponentResourcePayload]).Should(Equal(map[string]interface{}{
+		"limits": nil,
+		"requests": map[string]interface{}{
+			"memory": "1Gi",
+		},
+	}))
 }
