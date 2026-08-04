@@ -91,6 +91,41 @@ var _ = Describe("Redis replica role helpers", func() {
 		Expect(err).Should(HaveOccurred())
 	})
 
+	It("selects the majority Sentinel master", func() {
+		masterName, ok := selectMajorityMasterName([]string{
+			"wechat-log-cache-redis-0",
+			"wechat-log-cache-redis-1",
+			"wechat-log-cache-redis-0",
+		}, 3)
+		Expect(ok).Should(BeTrue())
+		Expect(masterName).Should(Equal("wechat-log-cache-redis-0"))
+	})
+
+	It("rejects Sentinel master votes without quorum", func() {
+		_, ok := selectMajorityMasterName([]string{
+			"wechat-log-cache-redis-0",
+			"wechat-log-cache-redis-1",
+		}, 3)
+		Expect(ok).Should(BeFalse())
+	})
+
+	It("builds per-pod Sentinel addresses when the pod list is available", func() {
+		viper.Set("SENTINEL_POD_NAME_LIST", "redis-sentinel-0,redis-sentinel-1,redis-sentinel-2")
+		viper.Set("SENTINEL_HEADLESS_SERVICE_NAME", "redis-sentinel-headless")
+		viper.Set("REDIS_SENTINEL_HOST_NETWORK_PORT", "26380")
+		DeferCleanup(func() {
+			viper.Set("SENTINEL_POD_NAME_LIST", nil)
+			viper.Set("SENTINEL_HEADLESS_SERVICE_NAME", nil)
+			viper.Set("REDIS_SENTINEL_HOST_NETWORK_PORT", nil)
+		})
+
+		Expect(getSentinelAddrs("redis")).Should(Equal([]string{
+			"redis-sentinel-0.redis-sentinel-headless:26380",
+			"redis-sentinel-1.redis-sentinel-headless:26380",
+			"redis-sentinel-2.redis-sentinel-headless:26380",
+		}))
+	})
+
 	It("uses Sentinel credentials when provided", func() {
 		viper.Set(sentinelUserEnv, "sentinel-user")
 		viper.Set(sentinelPasswordEnv, "sentinel-password")
