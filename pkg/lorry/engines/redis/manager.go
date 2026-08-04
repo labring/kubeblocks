@@ -45,10 +45,6 @@ type Manager struct {
 	client         redis.UniversalClient
 	clientSettings *Settings
 	sentinelClient *redis.SentinelClient
-
-	role                    string
-	roleSubscribeUpdateTime int64
-	roleProbePeriod         int64
 }
 
 var _ engines.DBManager = &Manager{}
@@ -72,10 +68,7 @@ func NewManager(properties engines.Properties) (engines.DBManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	mgr := &Manager{
-		DBManagerBase:   *managerBase,
-		roleProbePeriod: int64(viper.GetInt(constant.KBEnvRoleProbePeriod)),
-	}
+	mgr := &Manager{DBManagerBase: *managerBase}
 
 	majorVersion, err := getRedisMajorVersion()
 	if err != nil {
@@ -96,9 +89,6 @@ func NewManager(properties engines.Properties) (engines.DBManager, error) {
 	}
 
 	mgr.sentinelClient = newSentinelClient(mgr.clientSettings, mgr.ClusterCompName)
-	if mgr.sentinelClient != nil {
-		go mgr.SubscribeRoleChange(context.Background())
-	}
 
 	return mgr, nil
 }

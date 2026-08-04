@@ -31,8 +31,10 @@ import (
 )
 
 const (
-	ClusterType = "cluster"
-	NodeType    = "node"
+	ClusterType         = "cluster"
+	NodeType            = "node"
+	sentinelUserEnv     = "SENTINEL_USER"
+	sentinelPasswordEnv = "SENTINEL_PASSWORD"
 )
 
 func ParseClientFromProperties(properties map[string]string, defaultSettings *Settings) (client redis.UniversalClient, settings *Settings, err error) {
@@ -159,11 +161,12 @@ func newSentinelClient(s *Settings, clusterCompName string) *redis.SentinelClien
 		sentinelPort = viper.GetString("REDIS_SENTINEL_HOST_NETWORK_PORT")
 	}
 
+	sentinelUser, sentinelPassword := getSentinelCredentials(s)
 	opt := &redis.Options{
 		DB:              s.DB,
 		Addr:            fmt.Sprintf("%s:%s", sentinelHost, sentinelPort),
-		Password:        s.Password,
-		Username:        s.Username,
+		Password:        sentinelPassword,
+		Username:        sentinelUser,
 		MaxRetries:      s.RedisMaxRetries,
 		MaxRetryBackoff: time.Duration(s.RedisMaxRetryInterval),
 		MinRetryBackoff: time.Duration(s.RedisMinRetryInterval),
@@ -178,4 +181,15 @@ func newSentinelClient(s *Settings, clusterCompName string) *redis.SentinelClien
 	sentinelClient := redis.NewSentinelClient(opt)
 
 	return sentinelClient
+}
+
+func getSentinelCredentials(s *Settings) (string, string) {
+	username, password := s.Username, s.Password
+	if viper.IsSet(sentinelUserEnv) {
+		username = viper.GetString(sentinelUserEnv)
+	}
+	if viper.IsSet(sentinelPasswordEnv) {
+		password = viper.GetString(sentinelPasswordEnv)
+	}
+	return username, password
 }

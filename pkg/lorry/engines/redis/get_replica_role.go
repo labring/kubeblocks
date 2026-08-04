@@ -21,79 +21,73 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
-	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/apecloud/kubeblocks/pkg/lorry/dcs"
 	"github.com/apecloud/kubeblocks/pkg/lorry/engines/models"
 )
 
 func (mgr *Manager) GetReplicaRole(ctx context.Context, _ *dcs.Cluster) (string, error) {
-	// To ensure that the role information obtained through subscription is always delivered.
-	if mgr.role != "" && mgr.roleSubscribeUpdateTime+mgr.roleProbePeriod*2 < time.Now().Unix() {
-		return mgr.role, nil
-	}
-
-	// when we can't get role from sentinel, we query redis instead
-	getRoleFromRedisClient := func() (string, error) {
-		var role string
-		result, err := mgr.client.Info(ctx, "Replication").Result()
-		if err != nil {
-			mgr.Logger.Info("Role query failed", "error", err.Error())
-			return role, err
-		} else {
-			// split the result into lines
-			lines := strings.Split(result, "\r\n")
-			// find the line with role
-			for _, line := range lines {
-				if strings.HasPrefix(line, "role:") {
-					role = strings.Split(line, ":")[1]
-					break
-				}
-			}
-		}
-		if role == models.MASTER {
-			return models.PRIMARY, nil
-		} else {
-			return models.SECONDARY, nil
-		}
-	}
-
 	if mgr.sentinelClient == nil {
-		return getRoleFromRedisClient()
+		return mgr.getLocalRedisRole(ctx)
 	}
 
-	// We use the role obtained from Sentinel as the sole source of truth.
 	masterAddr, err := mgr.sentinelClient.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
 	if err != nil {
-		return getRoleFromRedisClient()
+		// Sentinel is registered after the Redis component first becomes Running.
+		// During that initial bootstrap, the local Redis role is the only available source.
+		if errors.Is(err, goredis.Nil) {
+			return mgr.getLocalRedisRole(ctx)
+		}
+		return "", err
 	}
 
-	masterName := strings.Split(masterAddr[0], ".")[0]
-	// if current member is not master from sentinel, just return secondary to avoid double master
+	masterName, err := parseSentinelMasterName(masterAddr)
+	if err != nil {
+		return "", err
+	}
 	if masterName != mgr.CurrentMemberName {
 		return models.SECONDARY, nil
 	}
-	return models.PRIMARY, nil
+	return mgr.getLocalRedisRole(ctx)
 }
 
-func (mgr *Manager) SubscribeRoleChange(ctx context.Context) {
-	pubSub := mgr.sentinelClient.Subscribe(ctx, "+switch-master")
-
-	// go-redis periodically sends ping messages to test connection health
-	// and re-subscribes if ping can not receive for 30 seconds.
-	// so we don't need to retry
-	ch := pubSub.Channel()
-	for msg := range ch {
-		// +switch-master <master name> <old ip> <old port> <new ip> <new port>
-		masterAddr := strings.Split(msg.Payload, " ")
-		masterName := strings.Split(masterAddr[3], ".")[0]
-
-		if masterName == mgr.CurrentMemberName {
-			mgr.role = models.PRIMARY
-		} else {
-			mgr.role = models.SECONDARY
-		}
-		mgr.roleSubscribeUpdateTime = time.Now().Unix()
+func (mgr *Manager) getLocalRedisRole(ctx context.Context) (string, error) {
+	result, err := mgr.client.Info(ctx, "Replication").Result()
+	if err != nil {
+		mgr.Logger.Info("Role query failed", "error", err.Error())
+		return "", err
 	}
+	switch role := parseRedisReplicationRole(result); role {
+	case models.MASTER:
+		return models.PRIMARY, nil
+	case models.SLAVE:
+		return models.SECONDARY, nil
+	default:
+		return "", fmt.Errorf("invalid redis replication role %q", role)
+	}
+}
+
+func parseRedisReplicationRole(info string) string {
+	for _, line := range strings.FieldsFunc(info, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "role:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "role:"))
+		}
+	}
+	return ""
+}
+
+func parseSentinelMasterName(masterAddr []string) (string, error) {
+	if len(masterAddr) < 2 || strings.TrimSpace(masterAddr[0]) == "" || strings.TrimSpace(masterAddr[1]) == "" {
+		return "", fmt.Errorf("invalid sentinel master address: %v", masterAddr)
+	}
+	host := strings.TrimSpace(masterAddr[0])
+	return strings.Split(host, ".")[0], nil
 }
