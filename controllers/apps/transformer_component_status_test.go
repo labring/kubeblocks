@@ -87,6 +87,12 @@ func TestBuildRoleProbeFailureCondition(t *testing.T) {
 			wantReason: "",
 		},
 		{
+			name:       "reports multiple primaries",
+			readyAt:    now.Add(-2 * time.Minute),
+			members:    []workloads.MemberStatus{primary("redis-0"), primary("redis-1")},
+			wantReason: roleProbeReasonMultiPrimary,
+		},
+		{
 			name:                "allows workloads ready without primary",
 			readyAt:             now.Add(-2 * time.Minute),
 			members:             []workloads.MemberStatus{secondary("redis-0"), secondary("redis-1")},
@@ -116,6 +122,53 @@ func TestBuildRoleProbeFailureCondition(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReconcileStatusReportsMultiplePrimariesAsAbnormal(t *testing.T) {
+	its := newRoleProbeTestInstanceSet(2, time.Now().Add(-2*time.Minute), []workloads.MemberStatus{
+		{
+			PodName:     "redis-0",
+			ReplicaRole: &workloads.ReplicaRole{Name: "primary", IsLeader: true},
+		},
+		{
+			PodName:     "redis-1",
+			ReplicaRole: &workloads.ReplicaRole{Name: "primary", IsLeader: true},
+		},
+	})
+	its.Name = "redis"
+	its.Annotations = map[string]string{constant.KubeBlocksGenerationKey: "1"}
+	its.Status.CurrentRevision = "revision"
+	its.Status.UpdateRevision = "revision"
+	its.Status.ObservedGeneration = its.Generation
+	its.Status.ReadyReplicas = 2
+	its.Status.UpdatedReplicas = 2
+	its.Status.AvailableReplicas = 2
+
+	transformer := &componentStatusTransformer{
+		cluster:    &appsv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+		comp:       &appsv1alpha1.Component{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+		runningITS: its,
+		synthesizeComp: &component.SynthesizedComponent{
+			Replicas: 2,
+			Probes:   newRoleProbeTestProbes(),
+			Roles:    []appsv1alpha1.ReplicaRole{{Name: "primary", Serviceable: true, Writable: true}},
+		},
+	}
+
+	if err := transformer.reconcileStatus(&componentTransformContext{}); err != nil {
+		t.Fatalf("reconcileStatus() error = %v", err)
+	}
+	if transformer.comp.Status.Phase != appsv1alpha1.AbnormalClusterCompPhase {
+		t.Fatalf("component phase = %s, want %s",
+			transformer.comp.Status.Phase, appsv1alpha1.AbnormalClusterCompPhase)
+	}
+	for _, condition := range transformer.comp.Status.Conditions {
+		if condition.Type == roleProbeConditionType && condition.Reason == roleProbeReasonMultiPrimary {
+			return
+		}
+	}
+	t.Fatalf("expected %s condition with reason %s, got %#v",
+		roleProbeConditionType, roleProbeReasonMultiPrimary, transformer.comp.Status.Conditions)
 }
 
 func TestRoleProbeRequeueAfter(t *testing.T) {

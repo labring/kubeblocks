@@ -308,7 +308,6 @@ func isIgnoredComponentPodUpdate(oldObj, newObj client.Object) bool {
 func normalizeIgnoredComponentPodUpdate(pod *corev1.Pod) {
 	pod.ResourceVersion = ""
 	pod.ManagedFields = nil
-	delete(pod.Annotations, constant.LastRoleSnapshotVersionAnnotationKey)
 	delete(pod.Annotations, roleChangedEventHandledAnnotationKey)
 	if len(pod.Annotations) == 0 {
 		pod.Annotations = nil

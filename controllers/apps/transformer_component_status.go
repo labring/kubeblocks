@@ -47,9 +47,10 @@ const (
 	// componentPhaseTransition the event reason indicates that the component transits to a new phase.
 	componentPhaseTransition = "ComponentPhaseTransition"
 
-	roleProbeConditionType   = "RoleProbe"
-	roleProbeReasonFailed    = "RoleProbeFailed"
-	roleProbeReasonNoPrimary = "NoPrimary"
+	roleProbeConditionType      = "RoleProbe"
+	roleProbeReasonFailed       = "RoleProbeFailed"
+	roleProbeReasonNoPrimary    = "NoPrimary"
+	roleProbeReasonMultiPrimary = "MultiplePrimaries"
 )
 
 // componentStatusTransformer computes the current status: read the underlying workload status and update the component status
@@ -200,6 +201,10 @@ func (t *componentStatusTransformer) reconcileStatus(transCtx *componentTransfor
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.StoppingClusterCompPhase, nil, "component is Stopping")
 	case stopped:
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.StoppedClusterCompPhase, nil, "component is Stopped")
+	case roleProbeFailure != nil && !isComponentAvailable:
+		t.setComponentStatusPhase(transCtx, appsv1alpha1.FailedClusterCompPhase, messages, "component is Failed")
+	case roleProbeFailure != nil:
+		t.setComponentStatusPhase(transCtx, appsv1alpha1.AbnormalClusterCompPhase, messages, "component is Abnormal")
 	case isITSUpdatedNRunning && isAllConfigSynced && !hasRunningVolumeExpansion:
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.RunningClusterCompPhase, nil, "component is Running")
 	case !hasFailure && isInCreatingPhase:
@@ -396,24 +401,19 @@ func (t *componentStatusTransformer) hasFailedPod() (bool, appsv1alpha1.Componen
 func buildRoleProbeFailureCondition(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterDefinitionProbes,
 	generation int64, now time.Time) *metav1.Condition {
 	deadline, ok := roleProbeDeadline(its, probes)
-	if !ok || now.Before(deadline) || roleProbeCompleteWithPrimary(its) {
+	if !ok || now.Before(deadline) || roleProbeHealthy(its) {
 		return nil
 	}
 
-	expectedMembers := int(*its.Spec.Replicas)
-	reportedRoles := 0
-	for _, member := range its.Status.MembersStatus {
-		if member.ReplicaRole == nil {
-			continue
-		}
-		reportedRoles++
-	}
-
+	expectedMembers, reportedRoles, primaryRoles, complete := roleProbeStatus(its)
 	reason := roleProbeReasonFailed
 	message := fmt.Sprintf("role probe reported %d/%d member roles", reportedRoles, expectedMembers)
-	if len(its.Status.MembersStatus) == expectedMembers && reportedRoles == expectedMembers {
+	if complete && primaryRoles == 0 {
 		reason = roleProbeReasonNoPrimary
 		message = fmt.Sprintf("all %d members reported non-primary roles", expectedMembers)
+	} else if complete && primaryRoles > 1 {
+		reason = roleProbeReasonMultiPrimary
+		message = fmt.Sprintf("%d members reported primary roles", primaryRoles)
 	}
 
 	return &metav1.Condition{
@@ -429,7 +429,7 @@ func buildRoleProbeFailureCondition(its *workloads.InstanceSet, probes *appsv1al
 func roleProbeRequeueAfter(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterDefinitionProbes,
 	now time.Time) time.Duration {
 	deadline, ok := roleProbeDeadline(its, probes)
-	if !ok || !now.Before(deadline) || roleProbeCompleteWithPrimary(its) {
+	if !ok || !now.Before(deadline) || roleProbeHealthy(its) {
 		return 0
 	}
 	return deadline.Sub(now)
@@ -448,18 +448,27 @@ func roleProbeDeadline(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterD
 	return readyCondition.LastTransitionTime.Add(roleProbeTimeout(probes)), true
 }
 
-func roleProbeCompleteWithPrimary(its *workloads.InstanceSet) bool {
-	if its == nil || its.Spec.Replicas == nil || len(its.Status.MembersStatus) != int(*its.Spec.Replicas) {
-		return false
+func roleProbeHealthy(its *workloads.InstanceSet) bool {
+	_, _, primaryRoles, complete := roleProbeStatus(its)
+	return complete && primaryRoles == 1
+}
+
+func roleProbeStatus(its *workloads.InstanceSet) (expectedMembers, reportedRoles, primaryRoles int, complete bool) {
+	if its == nil || its.Spec.Replicas == nil {
+		return 0, 0, 0, false
 	}
-	hasPrimary := false
+	expectedMembers = int(*its.Spec.Replicas)
 	for _, member := range its.Status.MembersStatus {
 		if member.ReplicaRole == nil {
-			return false
+			continue
 		}
-		hasPrimary = hasPrimary || member.ReplicaRole.IsLeader
+		reportedRoles++
+		if member.ReplicaRole.IsLeader {
+			primaryRoles++
+		}
 	}
-	return hasPrimary
+	complete = len(its.Status.MembersStatus) == expectedMembers && reportedRoles == expectedMembers
+	return expectedMembers, reportedRoles, primaryRoles, complete
 }
 
 func requiresPrimaryRole(roles []workloads.ReplicaRole) bool {
