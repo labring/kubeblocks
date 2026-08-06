@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"strings"
 	"time"
@@ -78,6 +80,7 @@ const (
 
 	probeAddrFlagKey     flagName = "health-probe-bind-address"
 	metricsAddrFlagKey   flagName = "metrics-bind-address"
+	pprofFlagKey         flagName = "enable-pprof"
 	leaderElectFlagKey   flagName = "leader-elect"
 	leaderElectIDFlagKey flagName = "leader-elect-id"
 
@@ -162,6 +165,7 @@ func (r flagName) viperName() string {
 func setupFlags() {
 	flag.String(metricsAddrFlagKey.String(), ":8080", "The address the metric endpoint binds to.")
 	flag.String(probeAddrFlagKey.String(), ":8081", "The address the probe endpoint binds to.")
+	flag.Bool(pprofFlagKey.String(), false, "Enable pprof diagnostic handlers on the metrics endpoint.")
 	flag.Bool(leaderElectFlagKey.String(), false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -270,6 +274,7 @@ func main() {
 	var (
 		metricsAddr                  string
 		probeAddr                    string
+		enablePprof                  bool
 		enableLeaderElection         bool
 		enableLeaderElectionID       string
 		multiClusterKubeConfig       string
@@ -304,6 +309,7 @@ func main() {
 
 	metricsAddr = viper.GetString(metricsAddrFlagKey.viperName())
 	probeAddr = viper.GetString(probeAddrFlagKey.viperName())
+	enablePprof = viper.GetBool(pprofFlagKey.viperName())
 	enableLeaderElection = viper.GetBool(leaderElectFlagKey.viperName())
 	enableLeaderElectionID = viper.GetString(leaderElectIDFlagKey.viperName())
 	multiClusterKubeConfig = viper.GetString(multiClusterKubeConfigFlagKey.viperName())
@@ -313,11 +319,23 @@ func main() {
 	userAgent = viper.GetString(userAgentFlagKey.viperName())
 
 	setupLog.Info("golang runtime metrics.", "featureGate", intctrlutil.EnabledRuntimeMetrics())
+	extraHandlers := metrics.RuntimeMetric()
+	if extraHandlers == nil {
+		extraHandlers = map[string]http.Handler{}
+	}
+	if enablePprof {
+		extraHandlers["/debug/pprof/"] = http.HandlerFunc(pprof.Index)
+		extraHandlers["/debug/pprof/cmdline"] = http.HandlerFunc(pprof.Cmdline)
+		extraHandlers["/debug/pprof/profile"] = http.HandlerFunc(pprof.Profile)
+		extraHandlers["/debug/pprof/symbol"] = http.HandlerFunc(pprof.Symbol)
+		extraHandlers["/debug/pprof/trace"] = http.HandlerFunc(pprof.Trace)
+		setupLog.Info("pprof diagnostic handlers enabled", "metricsAddress", metricsAddr)
+	}
 	mgr, err := ctrl.NewManager(intctrlutil.GeKubeRestConfig(userAgent), ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress:   metricsAddr,
-			ExtraHandlers: metrics.RuntimeMetric(),
+			ExtraHandlers: extraHandlers,
 		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
