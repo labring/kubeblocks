@@ -32,7 +32,7 @@ import (
 )
 
 func (mgr *Manager) GetReplicaRole(ctx context.Context, _ *dcs.Cluster) (string, error) {
-	if mgr.sentinelClient == nil {
+	if !mgr.sentinelEnabled {
 		return mgr.getLocalRedisRole(ctx)
 	}
 
@@ -60,18 +60,30 @@ func (mgr *Manager) getSentinelMajorityMasterName(ctx context.Context) (string, 
 
 	masterNames := make([]string, 0, len(sentinelClients))
 	var missingMasterCount int
+	type sentinelMasterQueryResult struct {
+		masterAddr []string
+		err        error
+	}
+	results := make(chan sentinelMasterQueryResult, len(sentinelClients))
 	for _, client := range sentinelClients {
-		masterAddr, err := client.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
-		if err != nil {
-			if errors.Is(err, goredis.Nil) {
+		go func(client *goredis.SentinelClient) {
+			masterAddr, err := client.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
+			results <- sentinelMasterQueryResult{masterAddr: masterAddr, err: err}
+		}(client)
+	}
+
+	for range sentinelClients {
+		result := <-results
+		if result.err != nil {
+			if errors.Is(result.err, goredis.Nil) {
 				missingMasterCount++
 				continue
 			}
-			mgr.Logger.Info("Sentinel master query failed", "error", err.Error())
+			mgr.Logger.Info("Sentinel master query failed", "error", result.err.Error())
 			continue
 		}
 
-		masterName, err := parseSentinelMasterName(masterAddr)
+		masterName, err := parseSentinelMasterName(result.masterAddr)
 		if err != nil {
 			mgr.Logger.Info("Sentinel master address is invalid", "error", err.Error())
 			continue

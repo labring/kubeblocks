@@ -146,41 +146,6 @@ func newClient(s *Settings) redis.UniversalClient {
 	return redis.NewClient(options)
 }
 
-func newSentinelClient(s *Settings, clusterCompName string) *redis.SentinelClient {
-	if !viper.IsSet("SENTINEL_COMPONENT_NAME") {
-		// cluster has no sentinel
-		return nil
-	}
-
-	sentinelHost := fmt.Sprintf("%s-sentinel-headless", clusterCompName)
-	if viper.IsSet("SENTINEL_HEADLESS_SERVICE_NAME") {
-		sentinelHost = viper.GetString("SENTINEL_HEADLESS_SERVICE_NAME")
-	}
-	sentinelPort := "26379"
-	if viper.IsSet("REDIS_SENTINEL_HOST_NETWORK_PORT") {
-		sentinelPort = viper.GetString("REDIS_SENTINEL_HOST_NETWORK_PORT")
-	}
-
-	sentinelUser, sentinelPassword := getSentinelCredentials(s)
-	opt := &redis.Options{
-		DB:              s.DB,
-		Addr:            fmt.Sprintf("%s:%s", sentinelHost, sentinelPort),
-		Password:        sentinelPassword,
-		Username:        sentinelUser,
-		MaxRetries:      s.RedisMaxRetries,
-		MaxRetryBackoff: time.Duration(s.RedisMaxRetryInterval),
-		MinRetryBackoff: time.Duration(s.RedisMinRetryInterval),
-		DialTimeout:     time.Duration(s.DialTimeout),
-		ReadTimeout:     time.Duration(s.ReadTimeout),
-		WriteTimeout:    time.Duration(s.WriteTimeout),
-		PoolSize:        s.PoolSize,
-		MinIdleConns:    s.MinIdleConns,
-		PoolTimeout:     time.Duration(s.PoolTimeout),
-	}
-
-	return redis.NewSentinelClient(opt)
-}
-
 func newSentinelRoleProbeClients(s *Settings, clusterCompName string) []*redis.SentinelClient {
 	sentinelAddrs := getSentinelAddrs(clusterCompName)
 	sentinelUser, sentinelPassword := getSentinelCredentials(s)

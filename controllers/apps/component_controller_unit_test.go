@@ -61,11 +61,11 @@ func TestIsIgnoredComponentPodUpdate(t *testing.T) {
 		ignored bool
 	}{
 		{
-			name: "keeps role snapshot version updates",
+			name: "ignores role snapshot version only",
 			mutate: func(pod *corev1.Pod) {
 				pod.Annotations[constant.LastRoleSnapshotVersionAnnotationKey] = "2"
 			},
-			ignored: false,
+			ignored: true,
 		},
 		{
 			name: "ignores handled role event annotation only",

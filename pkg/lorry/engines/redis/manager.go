@@ -42,9 +42,9 @@ var (
 
 type Manager struct {
 	engines.DBManagerBase
-	client         redis.UniversalClient
-	clientSettings *Settings
-	sentinelClient *redis.SentinelClient
+	client          redis.UniversalClient
+	clientSettings  *Settings
+	sentinelEnabled bool
 }
 
 var _ engines.DBManager = &Manager{}
@@ -68,7 +68,10 @@ func NewManager(properties engines.Properties) (engines.DBManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	mgr := &Manager{DBManagerBase: *managerBase}
+	mgr := &Manager{
+		DBManagerBase:   *managerBase,
+		sentinelEnabled: viper.IsSet("SENTINEL_COMPONENT_NAME"),
+	}
 
 	majorVersion, err := getRedisMajorVersion()
 	if err != nil {
@@ -87,8 +90,6 @@ func NewManager(properties engines.Properties) (engines.DBManager, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	mgr.sentinelClient = newSentinelClient(mgr.clientSettings, mgr.ClusterCompName)
 
 	return mgr, nil
 }
