@@ -118,12 +118,12 @@ type reconfigureParams struct {
 var (
 	// lazy creation of grpc connection
 	// TODO support connection pool
-	newGRPCClient = func(addr string) (cfgproto.ReconfigureClient, error) {
+	newGRPCClient = func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
 		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return cfgproto.NewReconfigureClient(conn), nil
+		return cfgproto.NewReconfigureClient(conn), func() { _ = conn.Close() }, nil
 	}
 )
 
