@@ -133,8 +133,7 @@ type BackupRepoReconciler struct {
 	RestConfig      *rest.Config
 	MultiClusterMgr multicluster.Manager
 
-	secretRefMapper   refObjectMapper
-	providerRefMapper refObjectMapper
+	secretRefMapper refObjectMapper
 }
 
 // full access on BackupRepos
@@ -208,7 +207,6 @@ func (r *BackupRepoReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Namespace: repo.Spec.Credential.Namespace,
 		})
 	}
-	r.providerRefMapper.setRef(repo, types.NamespacedName{Name: repo.Spec.StorageProviderRef})
 
 	// check storage provider
 	provider, err := r.checkStorageProvider(reqCtx, repo)
@@ -1463,7 +1461,6 @@ func (r *BackupRepoReconciler) deleteExternalResources(
 
 	// maintain mappers
 	r.secretRefMapper.removeRef(repo)
-	r.providerRefMapper.removeRef(repo)
 
 	return nil
 }
@@ -1618,7 +1615,30 @@ func (r *BackupRepoReconciler) mapRestoreToRepo(ctx context.Context, obj client.
 }
 
 func (r *BackupRepoReconciler) mapProviderToRepos(ctx context.Context, obj client.Object) []ctrl.Request {
-	return r.providerRefMapper.mapToRequests(obj)
+	repoList := &dpv1alpha1.BackupRepoList{}
+	if err := r.Client.List(ctx, repoList, multicluster.InControlContext()); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list BackupRepos for StorageProvider", "provider", obj.GetName())
+		return nil
+	}
+
+	providerName := obj.GetName()
+	requests := make([]ctrl.Request, 0, len(repoList.Items))
+	for i := range repoList.Items {
+		repo := &repoList.Items[i]
+		if repo.Spec.StorageProviderRef != providerName {
+			continue
+		}
+		requests = append(requests, ctrl.Request{
+			NamespacedName: client.ObjectKeyFromObject(repo),
+		})
+	}
+	sort.Slice(requests, func(i, j int) bool {
+		if requests[i].Namespace != requests[j].Namespace {
+			return requests[i].Namespace < requests[j].Namespace
+		}
+		return requests[i].Name < requests[j].Name
+	})
+	return requests
 }
 
 func (r *BackupRepoReconciler) mapSecretToRepos(ctx context.Context, obj client.Object) []ctrl.Request {
