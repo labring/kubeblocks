@@ -22,6 +22,7 @@ package configuration
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -31,6 +32,10 @@ import (
 
 	cfgproto "github.com/apecloud/kubeblocks/pkg/configuration/proto"
 )
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
 
 type stubReconfigureClient struct {
 	onlineUpgradeParams func(context.Context, *cfgproto.OnlineUpgradeParamsRequest) (*cfgproto.OnlineUpgradeParamsResponse, error)
@@ -107,11 +112,11 @@ func TestCommonOnlineUpdateWithPodClosesClient(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			closes := 0
-			create := func(string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
+			create := func(string) (cfgproto.ReconfigureClient, io.Closer, error) {
 				if test.createErr != nil {
 					return nil, nil, test.createErr
 				}
-				return test.client, func() { closes++ }, nil
+				return test.client, closerFunc(func() error { closes++; return nil }), nil
 			}
 
 			err := commonOnlineUpdateWithPod(testReconfigurePod(), test.ctx(), create, "config", map[string]string{"key": "value"})
@@ -168,11 +173,11 @@ func TestCommonStopContainerWithPodClosesClient(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			closes := 0
-			create := func(string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
+			create := func(string) (cfgproto.ReconfigureClient, io.Closer, error) {
 				if test.createErr != nil {
 					return nil, nil, test.createErr
 				}
-				return test.client, func() { closes++ }, nil
+				return test.client, closerFunc(func() error { closes++; return nil }), nil
 			}
 
 			err := commonStopContainerWithPod(testReconfigurePod(), context.Background(), []string{"database"}, create)

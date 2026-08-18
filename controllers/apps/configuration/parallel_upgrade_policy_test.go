@@ -20,6 +20,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configuration
 
 import (
+	"io"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -62,8 +64,8 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(3)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
-					return reconfigureClient, func() {}, nil
+				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
+					return reconfigureClient, closerFunc(func() error { return nil }), nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -91,8 +93,8 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 	Context("parallel reconfigure policy test with List pods failed", func() {
 		It("Should failed", func() {
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
-					return reconfigureClient, func() {}, nil
+				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
+					return reconfigureClient, closerFunc(func() error { return nil }), nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -131,8 +133,8 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(1)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
-					return reconfigureClient, func() {}, nil
+				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
+					return reconfigureClient, closerFunc(func() error { return nil }), nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -173,8 +175,8 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(1)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error) {
-					return reconfigureClient, func() {}, nil
+				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
+					return reconfigureClient, closerFunc(func() error { return nil }), nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),

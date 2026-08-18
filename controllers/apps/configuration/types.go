@@ -21,6 +21,7 @@ package configuration
 
 import (
 	"context"
+	"io"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,8 +30,7 @@ import (
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
-type closeReconfigureClient func()
-type createReconfigureClient func(addr string) (cfgproto.ReconfigureClient, closeReconfigureClient, error)
+type createReconfigureClient func(addr string) (cfgproto.ReconfigureClient, io.Closer, error)
 
 type GetPodsFunc func(params reconfigureParams) ([]corev1.Pod, error)
 type RestartComponent func(client client.Client, ctx intctrlutil.RequestCtx, key string, version string, objs []client.Object, recordEvent func(obj client.Object)) (client.Object, error)
