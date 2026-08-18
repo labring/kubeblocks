@@ -100,6 +100,7 @@ func commonOnlineUpdateWithPod(pod *corev1.Pod, ctx context.Context, createClien
 	if err != nil {
 		return err
 	}
+	defer client.Close()
 
 	response, err := client.OnlineUpgradeParams(ctx, &cfgproto.OnlineUpgradeParamsRequest{
 		ConfigSpec: configSpec,
@@ -135,6 +136,7 @@ func commonStopContainerWithPod(pod *corev1.Pod, ctx context.Context, containerN
 	if err != nil {
 		return err
 	}
+	defer client.Close()
 
 	response, err := client.StopContainer(ctx, &cfgproto.StopContainerRequest{
 		ContainerIDs: containerIDs,

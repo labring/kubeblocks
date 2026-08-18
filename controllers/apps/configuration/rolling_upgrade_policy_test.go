@@ -65,8 +65,11 @@ var _ = Describe("Reconfigure RollingPolicy", func() {
 			withConfigSpec("for_test", map[string]string{
 				"key": "value",
 			}),
-			withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-				return reconfigureClient, nil
+			withGRPCClient(func(addr string) (ReconfigureClient, error) {
+				return &closableReconfigureClient{
+					ReconfigureClient: reconfigureClient,
+					Closer:            closerFunc(func() error { return nil }),
+				}, nil
 			}),
 			withClusterComponent(replicas),
 			withCDComponent(compType, []appsv1alpha1.ComponentConfigSpec{{

@@ -60,8 +60,11 @@ var _ = Describe("Reconfigure OperatorSyncPolicy", func() {
 
 			By("prepare reconfigure policy params")
 			mockParam := newMockReconfigureParams("operatorSyncPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withConfigSpec("for_test", map[string]string{"a": "c b e f"}),
@@ -117,8 +120,11 @@ var _ = Describe("Reconfigure OperatorSyncPolicy", func() {
 
 			By("prepare reconfigure policy params")
 			mockParam := newMockReconfigureParams("operatorSyncPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withConfigSpec("for_test", map[string]string{"a": "c b e f"}),

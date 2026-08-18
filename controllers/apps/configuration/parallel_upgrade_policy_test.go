@@ -62,8 +62,11 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(3)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -91,8 +94,11 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 	Context("parallel reconfigure policy test with List pods failed", func() {
 		It("Should failed", func() {
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -131,8 +137,11 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(1)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),
@@ -173,8 +182,11 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				Times(1)
 
 			mockParam := newMockReconfigureParams("parallelPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, error) {
-					return reconfigureClient, nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withClusterComponent(3),

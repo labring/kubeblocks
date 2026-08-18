@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configuration
 
 import (
+	"io"
 	"math"
 
 	"google.golang.org/grpc"
@@ -115,15 +116,23 @@ type reconfigureParams struct {
 	InstanceSetUnits []workloads.InstanceSet
 }
 
+type closableReconfigureClient struct {
+	cfgproto.ReconfigureClient
+	io.Closer
+}
+
 var (
 	// lazy creation of grpc connection
 	// TODO support connection pool
-	newGRPCClient = func(addr string) (cfgproto.ReconfigureClient, error) {
+	newGRPCClient = func(addr string) (ReconfigureClient, error) {
 		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return nil, err
 		}
-		return cfgproto.NewReconfigureClient(conn), nil
+		return &closableReconfigureClient{
+			ReconfigureClient: cfgproto.NewReconfigureClient(conn),
+			Closer:            conn,
+		}, nil
 	}
 )
 
