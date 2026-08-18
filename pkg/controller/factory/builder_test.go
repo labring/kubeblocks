@@ -403,6 +403,23 @@ var _ = Describe("builder", func() {
 			Expect(configmap.SecurityContext).ShouldNot(BeNil())
 			Expect(configmap.SecurityContext.RunAsUser).ShouldNot(BeNil())
 			Expect(*configmap.SecurityContext.RunAsUser).Should(BeEquivalentTo(int64(0)))
+
+			envByName := make(map[string]corev1.EnvVar)
+			for _, env := range configmap.Env {
+				envByName[env.Name] = env
+			}
+			for name, key := range map[string]string{
+				"MYSQL_USER":          "username",
+				"MYSQL_PASSWORD":      "password",
+				"MYSQL_ROOT_USER":     "username",
+				"MYSQL_ROOT_PASSWORD": "password",
+			} {
+				Expect(envByName).Should(HaveKey(name))
+				Expect(envByName[name].ValueFrom).ShouldNot(BeNil())
+				Expect(envByName[name].ValueFrom.SecretKeyRef).ShouldNot(BeNil())
+				Expect(envByName[name].ValueFrom.SecretKeyRef.Name).Should(Equal("test-secret"))
+				Expect(envByName[name].ValueFrom.SecretKeyRef.Key).Should(Equal(key))
+			}
 		})
 
 		It("builds volume snapshot class correctly", func() {
