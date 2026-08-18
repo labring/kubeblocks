@@ -21,79 +21,139 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
-	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/apecloud/kubeblocks/pkg/lorry/dcs"
 	"github.com/apecloud/kubeblocks/pkg/lorry/engines/models"
 )
 
 func (mgr *Manager) GetReplicaRole(ctx context.Context, _ *dcs.Cluster) (string, error) {
-	// To ensure that the role information obtained through subscription is always delivered.
-	if mgr.role != "" && mgr.roleSubscribeUpdateTime+mgr.roleProbePeriod*2 < time.Now().Unix() {
-		return mgr.role, nil
+	if !mgr.sentinelEnabled {
+		return mgr.getLocalRedisRole(ctx)
 	}
 
-	// when we can't get role from sentinel, we query redis instead
-	getRoleFromRedisClient := func() (string, error) {
-		var role string
-		result, err := mgr.client.Info(ctx, "Replication").Result()
-		if err != nil {
-			mgr.Logger.Info("Role query failed", "error", err.Error())
-			return role, err
-		} else {
-			// split the result into lines
-			lines := strings.Split(result, "\r\n")
-			// find the line with role
-			for _, line := range lines {
-				if strings.HasPrefix(line, "role:") {
-					role = strings.Split(line, ":")[1]
-					break
-				}
-			}
-		}
-		if role == models.MASTER {
-			return models.PRIMARY, nil
-		} else {
-			return models.SECONDARY, nil
-		}
-	}
-
-	if mgr.sentinelClient == nil {
-		return getRoleFromRedisClient()
-	}
-
-	// We use the role obtained from Sentinel as the sole source of truth.
-	masterAddr, err := mgr.sentinelClient.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
+	masterName, err := mgr.getSentinelMajorityMasterName(ctx)
 	if err != nil {
-		return getRoleFromRedisClient()
+		// Sentinel is registered after the Redis component first becomes Running.
+		// During that initial bootstrap, the local Redis role is the only available source.
+		if errors.Is(err, goredis.Nil) {
+			return mgr.getLocalRedisRole(ctx)
+		}
+		return "", err
 	}
 
-	masterName := strings.Split(masterAddr[0], ".")[0]
-	// if current member is not master from sentinel, just return secondary to avoid double master
 	if masterName != mgr.CurrentMemberName {
 		return models.SECONDARY, nil
 	}
-	return models.PRIMARY, nil
+	return mgr.getLocalRedisRole(ctx)
 }
 
-func (mgr *Manager) SubscribeRoleChange(ctx context.Context) {
-	pubSub := mgr.sentinelClient.Subscribe(ctx, "+switch-master")
-
-	// go-redis periodically sends ping messages to test connection health
-	// and re-subscribes if ping can not receive for 30 seconds.
-	// so we don't need to retry
-	ch := pubSub.Channel()
-	for msg := range ch {
-		// +switch-master <master name> <old ip> <old port> <new ip> <new port>
-		masterAddr := strings.Split(msg.Payload, " ")
-		masterName := strings.Split(masterAddr[3], ".")[0]
-
-		if masterName == mgr.CurrentMemberName {
-			mgr.role = models.PRIMARY
-		} else {
-			mgr.role = models.SECONDARY
-		}
-		mgr.roleSubscribeUpdateTime = time.Now().Unix()
+func (mgr *Manager) getSentinelMajorityMasterName(ctx context.Context) (string, error) {
+	sentinelClients := newSentinelRoleProbeClients(mgr.clientSettings, mgr.ClusterCompName)
+	for _, client := range sentinelClients {
+		defer client.Close()
 	}
+
+	masterNames := make([]string, 0, len(sentinelClients))
+	var missingMasterCount int
+	type sentinelMasterQueryResult struct {
+		masterAddr []string
+		err        error
+	}
+	results := make(chan sentinelMasterQueryResult, len(sentinelClients))
+	for _, client := range sentinelClients {
+		go func(client *goredis.SentinelClient) {
+			masterAddr, err := client.GetMasterAddrByName(ctx, mgr.ClusterCompName).Result()
+			results <- sentinelMasterQueryResult{masterAddr: masterAddr, err: err}
+		}(client)
+	}
+
+	for range sentinelClients {
+		result := <-results
+		if result.err != nil {
+			if errors.Is(result.err, goredis.Nil) {
+				missingMasterCount++
+				continue
+			}
+			mgr.Logger.Info("Sentinel master query failed", "error", result.err.Error())
+			continue
+		}
+
+		masterName, err := parseSentinelMasterName(result.masterAddr)
+		if err != nil {
+			mgr.Logger.Info("Sentinel master address is invalid", "error", err.Error())
+			continue
+		}
+		masterNames = append(masterNames, masterName)
+	}
+
+	if len(masterNames) == 0 && missingMasterCount == len(sentinelClients) {
+		return "", goredis.Nil
+	}
+	if masterName, ok := selectMajorityMasterName(masterNames, len(sentinelClients)); ok {
+		return masterName, nil
+	}
+	return "", fmt.Errorf(
+		"no sentinel quorum for master, valid votes:%d, sentinel count:%d",
+		len(masterNames),
+		len(sentinelClients),
+	)
+}
+
+func (mgr *Manager) getLocalRedisRole(ctx context.Context) (string, error) {
+	result, err := mgr.client.Info(ctx, "Replication").Result()
+	if err != nil {
+		mgr.Logger.Info("Role query failed", "error", err.Error())
+		return "", err
+	}
+	switch role := parseRedisReplicationRole(result); role {
+	case models.MASTER:
+		return models.PRIMARY, nil
+	case models.SLAVE:
+		return models.SECONDARY, nil
+	default:
+		return "", fmt.Errorf("invalid redis replication role %q", role)
+	}
+}
+
+func parseRedisReplicationRole(info string) string {
+	for _, line := range strings.FieldsFunc(info, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "role:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "role:"))
+		}
+	}
+	return ""
+}
+
+func parseSentinelMasterName(masterAddr []string) (string, error) {
+	if len(masterAddr) < 2 || strings.TrimSpace(masterAddr[0]) == "" || strings.TrimSpace(masterAddr[1]) == "" {
+		return "", fmt.Errorf("invalid sentinel master address: %v", masterAddr)
+	}
+	host := strings.TrimSpace(masterAddr[0])
+	return strings.Split(host, ".")[0], nil
+}
+
+func selectMajorityMasterName(masterNames []string, sentinelCount int) (string, bool) {
+	if sentinelCount <= 0 {
+		return "", false
+	}
+	quorum := sentinelCount/2 + 1
+	counts := make(map[string]int, len(masterNames))
+	for _, masterName := range masterNames {
+		if masterName == "" {
+			continue
+		}
+		counts[masterName]++
+		if counts[masterName] >= quorum {
+			return masterName, true
+		}
+	}
+	return "", false
 }

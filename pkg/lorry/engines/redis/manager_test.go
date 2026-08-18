@@ -64,6 +64,85 @@ var _ = Describe("Redis DBManager", func() {
 	})
 })
 
+var _ = Describe("Redis replica role helpers", func() {
+	It("parses redis replication role from CRLF info output", func() {
+		info := "role:master\r\nconnected_slaves:1\r\n"
+		Expect(parseRedisReplicationRole(info)).Should(Equal("master"))
+	})
+
+	It("parses redis replication role from LF info output", func() {
+		info := "connected_slaves:0\nrole:slave\nmaster_link_status:down\n"
+		Expect(parseRedisReplicationRole(info)).Should(Equal("slave"))
+	})
+
+	It("returns empty role when replication info has no role line", func() {
+		Expect(parseRedisReplicationRole("connected_slaves:0\r\n")).Should(BeEmpty())
+	})
+
+	It("parses sentinel master name", func() {
+		host := "wechat-log-cache-redis-0.wechat-log-cache-redis-headless.ns-gewclvtg.svc.cluster.local"
+		name, err := parseSentinelMasterName([]string{host, "6379"})
+		Expect(err).Should(Succeed())
+		Expect(name).Should(Equal("wechat-log-cache-redis-0"))
+	})
+
+	It("rejects invalid sentinel master address", func() {
+		_, err := parseSentinelMasterName([]string{"wechat-log-cache-redis-0"})
+		Expect(err).Should(HaveOccurred())
+	})
+
+	It("selects the majority Sentinel master", func() {
+		masterName, ok := selectMajorityMasterName([]string{
+			"wechat-log-cache-redis-0",
+			"wechat-log-cache-redis-1",
+			"wechat-log-cache-redis-0",
+		}, 3)
+		Expect(ok).Should(BeTrue())
+		Expect(masterName).Should(Equal("wechat-log-cache-redis-0"))
+	})
+
+	It("rejects Sentinel master votes without quorum", func() {
+		_, ok := selectMajorityMasterName([]string{
+			"wechat-log-cache-redis-0",
+			"wechat-log-cache-redis-1",
+		}, 3)
+		Expect(ok).Should(BeFalse())
+	})
+
+	It("builds per-pod Sentinel addresses when the pod list is available", func() {
+		viper.Set("SENTINEL_POD_NAME_LIST", "redis-sentinel-0,redis-sentinel-1,redis-sentinel-2")
+		viper.Set("SENTINEL_HEADLESS_SERVICE_NAME", "redis-sentinel-headless")
+		viper.Set("REDIS_SENTINEL_HOST_NETWORK_PORT", "26380")
+		DeferCleanup(func() {
+			viper.Set("SENTINEL_POD_NAME_LIST", nil)
+			viper.Set("SENTINEL_HEADLESS_SERVICE_NAME", nil)
+			viper.Set("REDIS_SENTINEL_HOST_NETWORK_PORT", nil)
+		})
+
+		Expect(getSentinelAddrs("redis")).Should(Equal([]string{
+			"redis-sentinel-0.redis-sentinel-headless:26380",
+			"redis-sentinel-1.redis-sentinel-headless:26380",
+			"redis-sentinel-2.redis-sentinel-headless:26380",
+		}))
+	})
+
+	It("uses Sentinel credentials when provided", func() {
+		viper.Set(sentinelUserEnv, "sentinel-user")
+		viper.Set(sentinelPasswordEnv, "sentinel-password")
+		DeferCleanup(func() {
+			viper.Set(sentinelUserEnv, nil)
+			viper.Set(sentinelPasswordEnv, nil)
+		})
+
+		username, password := getSentinelCredentials(&Settings{
+			Username: "redis-user",
+			Password: "redis-password",
+		})
+		Expect(username).Should(Equal("sentinel-user"))
+		Expect(password).Should(Equal("sentinel-password"))
+	})
+})
+
 // func TestRedisInit(t *testing.T) {
 // 	r, _ := mockRedisOps(t)
 // 	defer r.Close()

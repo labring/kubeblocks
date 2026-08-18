@@ -26,6 +26,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,6 +46,11 @@ import (
 const (
 	// componentPhaseTransition the event reason indicates that the component transits to a new phase.
 	componentPhaseTransition = "ComponentPhaseTransition"
+
+	roleProbeConditionType      = "RoleProbe"
+	roleProbeReasonFailed       = "RoleProbeFailed"
+	roleProbeReasonNoPrimary    = "NoPrimary"
+	roleProbeReasonMultiPrimary = "MultiplePrimaries"
 )
 
 // componentStatusTransformer computes the current status: read the underlying workload status and update the component status
@@ -97,6 +103,11 @@ func (t *componentStatusTransformer) Transform(ctx graph.TransformContext, dag *
 		}
 	}
 	graphCli.Status(dag, transCtx.ComponentOrig, comp)
+	if t.synthesizeComp != nil {
+		if after := roleProbeRequeueAfter(t.runningITS, t.synthesizeComp.Probes, time.Now()); after > 0 {
+			return intctrlutil.NewDelayedRequeueError(after, "waiting for role probe timeout")
+		}
+	}
 	return nil
 }
 
@@ -137,6 +148,21 @@ func (t *componentStatusTransformer) reconcileStatus(transCtx *componentTransfor
 
 	// check if the component has failed pod
 	hasFailedPod, messages := t.hasFailedPod()
+	var probes *appsv1alpha1.ClusterDefinitionProbes
+	if t.synthesizeComp != nil {
+		probes = t.synthesizeComp.Probes
+	}
+	roleProbeFailure := buildRoleProbeFailureCondition(
+		t.runningITS, probes, t.comp.Generation, time.Now())
+	if roleProbeFailure == nil {
+		meta.RemoveStatusCondition(&t.comp.Status.Conditions, roleProbeConditionType)
+	} else {
+		meta.SetStatusCondition(&t.comp.Status.Conditions, *roleProbeFailure)
+		if messages == nil {
+			messages = appsv1alpha1.ComponentMessageMap{}
+		}
+		messages.SetObjectMessage(workloads.Kind, t.runningITS.Name, roleProbeFailure.Message)
+	}
 
 	// check if the component scale out failed
 	isScaleOutFailed, err := t.isScaleOutFailed(transCtx)
@@ -152,7 +178,7 @@ func (t *componentStatusTransformer) reconcileStatus(transCtx *componentTransfor
 
 	// calculate if the component has failure
 	hasFailure := func() bool {
-		return hasFailedPod || isScaleOutFailed || hasFailedVolumeExpansion
+		return hasFailedPod || roleProbeFailure != nil || isScaleOutFailed || hasFailedVolumeExpansion
 	}()
 
 	// check if the component is available
@@ -175,6 +201,10 @@ func (t *componentStatusTransformer) reconcileStatus(transCtx *componentTransfor
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.StoppingClusterCompPhase, nil, "component is Stopping")
 	case stopped:
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.StoppedClusterCompPhase, nil, "component is Stopped")
+	case roleProbeFailure != nil && !isComponentAvailable:
+		t.setComponentStatusPhase(transCtx, appsv1alpha1.FailedClusterCompPhase, messages, "component is Failed")
+	case roleProbeFailure != nil:
+		t.setComponentStatusPhase(transCtx, appsv1alpha1.AbnormalClusterCompPhase, messages, "component is Abnormal")
 	case isITSUpdatedNRunning && isAllConfigSynced && !hasRunningVolumeExpansion:
 		t.setComponentStatusPhase(transCtx, appsv1alpha1.RunningClusterCompPhase, nil, "component is Running")
 	case !hasFailure && isInCreatingPhase:
@@ -217,7 +247,7 @@ func (t *componentStatusTransformer) isComponentAvailable() bool {
 		return true
 	}
 	for _, status := range t.runningITS.Status.MembersStatus {
-		if status.ReplicaRole.IsLeader {
+		if status.ReplicaRole != nil && status.ReplicaRole.IsLeader {
 			return true
 		}
 	}
@@ -365,26 +395,97 @@ func (t *componentStatusTransformer) hasFailedPod() (bool, appsv1alpha1.Componen
 		return true, messages
 	}
 
-	// check InstanceReady condition
-	if !meta.IsStatusConditionTrue(t.runningITS.Status.Conditions, string(workloads.InstanceReady)) {
-		return false, nil
-	}
-
-	// all instances are in Ready condition, check role probe
-	if len(t.runningITS.Spec.Roles) == 0 {
-		return false, nil
-	}
-	if len(t.runningITS.Status.MembersStatus) == int(t.runningITS.Status.Replicas) {
-		return false, nil
-	}
-	probeTimeoutDuration := time.Duration(appsv1alpha1.DefaultRoleProbeTimeoutAfterPodsReady) * time.Second
-	condition := meta.FindStatusCondition(t.runningITS.Status.Conditions, string(workloads.InstanceReady))
-	if time.Now().After(condition.LastTransitionTime.Add(probeTimeoutDuration)) {
-		messages.SetObjectMessage(workloads.Kind, t.runningITS.Name, "Role probe timeout, check whether the application is available")
-		return true, messages
-	}
-
 	return false, nil
+}
+
+func buildRoleProbeFailureCondition(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterDefinitionProbes,
+	generation int64, now time.Time) *metav1.Condition {
+	deadline, ok := roleProbeDeadline(its, probes)
+	if !ok || now.Before(deadline) || roleProbeHealthy(its) {
+		return nil
+	}
+
+	expectedMembers, reportedRoles, primaryRoles, complete := roleProbeStatus(its)
+	reason := roleProbeReasonFailed
+	message := fmt.Sprintf("role probe reported %d/%d member roles", reportedRoles, expectedMembers)
+	if complete && primaryRoles == 0 {
+		reason = roleProbeReasonNoPrimary
+		message = fmt.Sprintf("all %d members reported non-primary roles", expectedMembers)
+	} else if complete && primaryRoles > 1 {
+		reason = roleProbeReasonMultiPrimary
+		message = fmt.Sprintf("%d members reported primary roles", primaryRoles)
+	}
+
+	return &metav1.Condition{
+		Type:               roleProbeConditionType,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: generation,
+		LastTransitionTime: metav1.NewTime(now),
+		Reason:             reason,
+		Message:            message,
+	}
+}
+
+func roleProbeRequeueAfter(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterDefinitionProbes,
+	now time.Time) time.Duration {
+	deadline, ok := roleProbeDeadline(its, probes)
+	if !ok || !now.Before(deadline) || roleProbeHealthy(its) {
+		return 0
+	}
+	return deadline.Sub(now)
+}
+
+func roleProbeDeadline(its *workloads.InstanceSet, probes *appsv1alpha1.ClusterDefinitionProbes) (time.Time, bool) {
+	if its == nil || its.Spec.Replicas == nil || *its.Spec.Replicas <= 0 ||
+		its.Status.ReadyWithoutPrimary || !requiresPrimaryRole(its.Spec.Roles) {
+		return time.Time{}, false
+	}
+	readyCondition := meta.FindStatusCondition(its.Status.Conditions, string(workloads.InstanceReady))
+	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue ||
+		readyCondition.LastTransitionTime.Time.IsZero() {
+		return time.Time{}, false
+	}
+	return readyCondition.LastTransitionTime.Add(roleProbeTimeout(probes)), true
+}
+
+func roleProbeHealthy(its *workloads.InstanceSet) bool {
+	_, _, primaryRoles, complete := roleProbeStatus(its)
+	return complete && primaryRoles == 1
+}
+
+func roleProbeStatus(its *workloads.InstanceSet) (expectedMembers, reportedRoles, primaryRoles int, complete bool) {
+	if its == nil || its.Spec.Replicas == nil {
+		return 0, 0, 0, false
+	}
+	expectedMembers = int(*its.Spec.Replicas)
+	for _, member := range its.Status.MembersStatus {
+		if member.ReplicaRole == nil {
+			continue
+		}
+		reportedRoles++
+		if member.ReplicaRole.IsLeader {
+			primaryRoles++
+		}
+	}
+	complete = len(its.Status.MembersStatus) == expectedMembers && reportedRoles == expectedMembers
+	return expectedMembers, reportedRoles, primaryRoles, complete
+}
+
+func requiresPrimaryRole(roles []workloads.ReplicaRole) bool {
+	for _, role := range roles {
+		if role.IsLeader {
+			return true
+		}
+	}
+	return false
+}
+
+func roleProbeTimeout(probes *appsv1alpha1.ClusterDefinitionProbes) time.Duration {
+	timeoutSeconds := appsv1alpha1.DefaultRoleProbeTimeoutAfterPodsReady
+	if probes != nil && probes.RoleProbeTimeoutAfterPodsReady > 0 {
+		timeoutSeconds = probes.RoleProbeTimeoutAfterPodsReady
+	}
+	return time.Duration(timeoutSeconds) * time.Second
 }
 
 // setComponentStatusPhase sets the component phase and messages conditionally.
