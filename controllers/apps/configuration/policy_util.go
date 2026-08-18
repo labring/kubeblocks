@@ -96,11 +96,14 @@ func commonOnlineUpdateWithPod(pod *corev1.Pod, ctx context.Context, createClien
 	if err != nil {
 		return err
 	}
-	client, closeClient, err := createClient(address)
-	if err != nil {
-		return err
-	}
-	defer closeClient()
+client, closeClient, err := createClient(address)
+if err != nil {
+	return err
+}
+if closeClient == nil {
+	return core.MakeError("reconfigure client close function is nil")
+}
+defer closeClient()
 
 	response, err := client.OnlineUpgradeParams(ctx, &cfgproto.OnlineUpgradeParamsRequest{
 		ConfigSpec: configSpec,
