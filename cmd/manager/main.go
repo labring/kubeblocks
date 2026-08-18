@@ -165,7 +165,7 @@ func (r flagName) viperName() string {
 func setupFlags() {
 	flag.String(metricsAddrFlagKey.String(), ":8080", "The address the metric endpoint binds to.")
 	flag.String(probeAddrFlagKey.String(), ":8081", "The address the probe endpoint binds to.")
-	flag.Bool(pprofFlagKey.String(), false, "Enable pprof diagnostic handlers on the metrics endpoint.")
+	flag.Bool(pprofFlagKey.String(), false, "Enable pprof diagnostic handlers on the metrics endpoint (ensure the metrics endpoint is not publicly accessible when enabled).")
 	flag.Bool(leaderElectFlagKey.String(), false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
