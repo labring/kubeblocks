@@ -20,7 +20,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -165,7 +167,7 @@ func (r flagName) viperName() string {
 func setupFlags() {
 	flag.String(metricsAddrFlagKey.String(), ":8080", "The address the metric endpoint binds to.")
 	flag.String(probeAddrFlagKey.String(), ":8081", "The address the probe endpoint binds to.")
-	flag.Bool(pprofFlagKey.String(), false, "Enable pprof diagnostic handlers on the metrics endpoint (ensure the metrics endpoint is not publicly accessible when enabled).")
+	flag.Bool(pprofFlagKey.String(), false, "Enable pprof diagnostic handlers on a dedicated loopback-only listener (127.0.0.1:6060); never exposed on the metrics endpoint.")
 	flag.Bool(leaderElectFlagKey.String(), false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -216,6 +218,48 @@ func setupFlags() {
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
 		setupLog.Error(err, "unable to bind flags")
 		os.Exit(1)
+	}
+}
+
+// pprofBindAddress is a loopback-only address so diagnostic endpoints are not
+// reachable from outside the pod; use kubectl port-forward or kubectl exec to
+// access them.
+const pprofBindAddress = "127.0.0.1:6060"
+
+// pprofServer serves pprof handlers on a dedicated listener instead of reusing
+// the metrics endpoint mux.
+type pprofServer struct {
+	addr string
+}
+
+func newPprofHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
+}
+
+func (p *pprofServer) Start(ctx context.Context) error {
+	srv := &http.Server{Addr: p.addr, Handler: newPprofHandler()}
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	setupLog.Info("pprof diagnostic handlers enabled",
+		"pprofAddress", p.addr,
+		"note", "bound to loopback only; use kubectl port-forward or kubectl exec to access")
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
 	}
 }
 
@@ -319,23 +363,11 @@ func main() {
 	userAgent = viper.GetString(userAgentFlagKey.viperName())
 
 	setupLog.Info("golang runtime metrics.", "featureGate", intctrlutil.EnabledRuntimeMetrics())
-	extraHandlers := metrics.RuntimeMetric()
-	if extraHandlers == nil {
-		extraHandlers = map[string]http.Handler{}
-	}
-	if enablePprof {
-		extraHandlers["/debug/pprof/"] = http.HandlerFunc(pprof.Index)
-		extraHandlers["/debug/pprof/cmdline"] = http.HandlerFunc(pprof.Cmdline)
-		extraHandlers["/debug/pprof/profile"] = http.HandlerFunc(pprof.Profile)
-		extraHandlers["/debug/pprof/symbol"] = http.HandlerFunc(pprof.Symbol)
-		extraHandlers["/debug/pprof/trace"] = http.HandlerFunc(pprof.Trace)
-		setupLog.Info("pprof diagnostic handlers enabled", "metricsAddress", metricsAddr)
-	}
 	mgr, err := ctrl.NewManager(intctrlutil.GeKubeRestConfig(userAgent), ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress:   metricsAddr,
-			ExtraHandlers: extraHandlers,
+			ExtraHandlers: metrics.RuntimeMetric(),
 		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -658,6 +690,12 @@ func main() {
 	}
 	viper.SetDefault(constant.CfgKeyServerInfo, *ver)
 
+	if enablePprof {
+		if err := mgr.Add(&pprofServer{addr: pprofBindAddress}); err != nil {
+			setupLog.Error(err, "unable to add pprof server")
+			os.Exit(1)
+		}
+	}
 	setupLog.Info("starting manager")
 	if multiClusterMgr != nil {
 		if err := multiClusterMgr.Bind(mgr); err != nil {
