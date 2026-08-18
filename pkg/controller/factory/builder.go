@@ -470,6 +470,24 @@ func BuildCfgManagerContainer(sidecarRenderedParam *cfgcm.CfgManagerBuildParams)
 				},
 			},
 			corev1.EnvVar{
+				Name: "MYSQL_ROOT_USER",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						Key:                  "username",
+						LocalObjectReference: corev1.LocalObjectReference{Name: sidecarRenderedParam.SecreteName},
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "MYSQL_ROOT_PASSWORD",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						Key:                  "password",
+						LocalObjectReference: corev1.LocalObjectReference{Name: sidecarRenderedParam.SecreteName},
+					},
+				},
+			},
+			corev1.EnvVar{
 				Name:  "DATA_SOURCE_NAME",
 				Value: "$(MYSQL_USER):$(MYSQL_PASSWORD)@(localhost:3306)/",
 			},
