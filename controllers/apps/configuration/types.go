@@ -30,7 +30,12 @@ import (
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
-type createReconfigureClient func(addr string) (cfgproto.ReconfigureClient, io.Closer, error)
+type ReconfigureClient interface {
+	cfgproto.ReconfigureClient
+	io.Closer
+}
+
+type createReconfigureClient func(addr string) (ReconfigureClient, error)
 
 type GetPodsFunc func(params reconfigureParams) ([]corev1.Pod, error)
 type RestartComponent func(client client.Client, ctx intctrlutil.RequestCtx, key string, version string, objs []client.Object, recordEvent func(obj client.Object)) (client.Object, error)

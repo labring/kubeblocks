@@ -22,7 +22,6 @@ package configuration
 import (
 	"context"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 
@@ -112,11 +111,14 @@ func TestCommonOnlineUpdateWithPodClosesClient(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			closes := 0
-			create := func(string) (cfgproto.ReconfigureClient, io.Closer, error) {
+			create := func(string) (ReconfigureClient, error) {
 				if test.createErr != nil {
-					return nil, nil, test.createErr
+					return nil, test.createErr
 				}
-				return test.client, closerFunc(func() error { closes++; return nil }), nil
+				return &closableReconfigureClient{
+					ReconfigureClient: test.client,
+					Closer:            closerFunc(func() error { closes++; return nil }),
+				}, nil
 			}
 
 			err := commonOnlineUpdateWithPod(testReconfigurePod(), test.ctx(), create, "config", map[string]string{"key": "value"})
@@ -173,11 +175,14 @@ func TestCommonStopContainerWithPodClosesClient(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			closes := 0
-			create := func(string) (cfgproto.ReconfigureClient, io.Closer, error) {
+			create := func(string) (ReconfigureClient, error) {
 				if test.createErr != nil {
-					return nil, nil, test.createErr
+					return nil, test.createErr
 				}
-				return test.client, closerFunc(func() error { closes++; return nil }), nil
+				return &closableReconfigureClient{
+					ReconfigureClient: test.client,
+					Closer:            closerFunc(func() error { closes++; return nil }),
+				}, nil
 			}
 
 			err := commonStopContainerWithPod(testReconfigurePod(), context.Background(), []string{"database"}, create)

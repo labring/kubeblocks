@@ -116,15 +116,23 @@ type reconfigureParams struct {
 	InstanceSetUnits []workloads.InstanceSet
 }
 
+type closableReconfigureClient struct {
+	cfgproto.ReconfigureClient
+	io.Closer
+}
+
 var (
 	// lazy creation of grpc connection
 	// TODO support connection pool
-	newGRPCClient = func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
+	newGRPCClient = func(addr string) (ReconfigureClient, error) {
 		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return cfgproto.NewReconfigureClient(conn), conn, nil
+		return &closableReconfigureClient{
+			ReconfigureClient: cfgproto.NewReconfigureClient(conn),
+			Closer:            conn,
+		}, nil
 	}
 )
 

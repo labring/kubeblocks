@@ -96,14 +96,11 @@ func commonOnlineUpdateWithPod(pod *corev1.Pod, ctx context.Context, createClien
 	if err != nil {
 		return err
 	}
-	client, closer, err := createClient(address)
+	client, err := createClient(address)
 	if err != nil {
 		return err
 	}
-	if closer == nil {
-		return core.MakeError("reconfigure client close function is nil")
-	}
-	defer closer.Close()
+	defer client.Close()
 
 	response, err := client.OnlineUpgradeParams(ctx, &cfgproto.OnlineUpgradeParamsRequest{
 		ConfigSpec: configSpec,
@@ -135,14 +132,11 @@ func commonStopContainerWithPod(pod *corev1.Pod, ctx context.Context, containerN
 		return err
 	}
 	// stop container
-	client, closer, err := createClient(address)
+	client, err := createClient(address)
 	if err != nil {
 		return err
 	}
-	if closer == nil {
-		return core.MakeError("reconfigure client close function is nil")
-	}
-	defer closer.Close()
+	defer client.Close()
 
 	response, err := client.StopContainer(ctx, &cfgproto.StopContainerRequest{
 		ContainerIDs: containerIDs,

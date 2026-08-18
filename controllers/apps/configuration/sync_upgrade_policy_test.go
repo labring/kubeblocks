@@ -20,8 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configuration
 
 import (
-	"io"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -62,8 +60,11 @@ var _ = Describe("Reconfigure OperatorSyncPolicy", func() {
 
 			By("prepare reconfigure policy params")
 			mockParam := newMockReconfigureParams("operatorSyncPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
-					return reconfigureClient, closerFunc(func() error { return nil }), nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withConfigSpec("for_test", map[string]string{"a": "c b e f"}),
@@ -119,8 +120,11 @@ var _ = Describe("Reconfigure OperatorSyncPolicy", func() {
 
 			By("prepare reconfigure policy params")
 			mockParam := newMockReconfigureParams("operatorSyncPolicy", k8sMockClient.Client(),
-				withGRPCClient(func(addr string) (cfgproto.ReconfigureClient, io.Closer, error) {
-					return reconfigureClient, closerFunc(func() error { return nil }), nil
+				withGRPCClient(func(addr string) (ReconfigureClient, error) {
+					return &closableReconfigureClient{
+						ReconfigureClient: reconfigureClient,
+						Closer:            closerFunc(func() error { return nil }),
+					}, nil
 				}),
 				withMockInstanceSet(3, nil),
 				withConfigSpec("for_test", map[string]string{"a": "c b e f"}),
