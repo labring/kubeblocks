@@ -20,16 +20,21 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configuration
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/apecloud/kubeblocks/apis/apps/v1beta1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
@@ -235,4 +240,67 @@ func TestUpdateConfigPayloadUsesEffectivePrimaryContainerResources(t *testing.T)
 			"memory": "1Gi",
 		},
 	}))
+}
+
+func TestPruneResourceDerivedConfigParams(t *testing.T) {
+	g := NewWithT(t)
+	ptr := func(s string) *string {
+		return &s
+	}
+
+	scheme := runtime.NewScheme()
+	g.Expect(appsv1beta1.AddToScheme(scheme)).Should(Succeed())
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appsv1beta1.ConfigConstraint{
+		ObjectMeta: metav1.ObjectMeta{Name: "redis7-config-constraints"},
+		Spec: appsv1beta1.ConfigConstraintSpec{
+			ParametersSchema: &appsv1beta1.ParametersSchema{
+				CUE: `
+#RedisParameter: {
+	maxmemory?: int @storeResource()
+	maxclients: int
+}
+configuration: #RedisParameter & {
+}
+`,
+			},
+		},
+	}).Build()
+
+	config := appsv1alpha1.ConfigurationSpec{
+		ConfigItemDetails: []appsv1alpha1.ConfigurationItemDetail{{
+			Name: "redis-replication-config",
+			ConfigSpec: &appsv1alpha1.ComponentConfigSpec{
+				ComponentTemplateSpec: appsv1alpha1.ComponentTemplateSpec{
+					Name: "redis-replication-config",
+				},
+				ConfigConstraintRef: "redis7-config-constraints",
+				ReRenderResourceTypes: []appsv1alpha1.RerenderResourceType{
+					appsv1alpha1.ComponentVScaleType,
+				},
+			},
+			ConfigFileParams: map[string]appsv1alpha1.ConfigParams{
+				"redis.conf": {
+					Parameters: map[string]*string{
+						"maxmemory":  ptr("3006477107"),
+						"maxclients": ptr("4000"),
+					},
+				},
+				"raw.conf": {
+					Content: ptr("maxmemory 1"),
+				},
+			},
+		}},
+	}
+
+	updated, err := PruneResourceDerivedConfigParams(context.Background(), cli, &config)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeTrue())
+	g.Expect(config.ConfigItemDetails[0].ConfigFileParams["redis.conf"].Parameters).Should(Equal(map[string]*string{
+		"maxclients": ptr("4000"),
+	}))
+	g.Expect(config.ConfigItemDetails[0].ConfigFileParams["raw.conf"].Content).Should(Equal(ptr("maxmemory 1")))
+
+	updated, err = PruneResourceDerivedConfigParams(context.Background(), cli, &config)
+	g.Expect(err).ShouldNot(HaveOccurred())
+	g.Expect(updated).Should(BeFalse())
 }
