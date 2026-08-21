@@ -22,10 +22,12 @@ package validate
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/apecloud/kubeblocks/pkg/configuration/core"
@@ -130,6 +132,39 @@ func (c *cueTypeExtractor) addFieldUnits(path string, t CueType, base string) {
 	if t != IntType && base != "" {
 		c.fieldUnits[path] = base
 	}
+}
+
+func ResourceDerivedParameterNames(cueString string) ([]string, error) {
+	if cueString == "" {
+		return nil, nil
+	}
+	context := cuecontext.New()
+	tpl := context.CompileString(cueString)
+	if err := tpl.Err(); err != nil {
+		return nil, err
+	}
+
+	extractor := &cueTypeExtractor{context: context}
+	extractor.Visit(tpl)
+
+	parameters := make(map[string]struct{})
+	for path, t := range extractor.fieldTypes {
+		if t != ClassicStorageType {
+			continue
+		}
+		parameters[resourceDerivedParameterName(path)] = struct{}{}
+	}
+
+	names := make([]string, 0, len(parameters))
+	for name := range parameters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func resourceDerivedParameterName(path string) string {
+	return strings.TrimPrefix(path, "configuration.")
 }
 
 func (c *cueTypeExtractor) hasFieldType(parent string, cur string) (string, bool) {

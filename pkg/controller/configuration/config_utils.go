@@ -31,9 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/apecloud/kubeblocks/apis/apps/v1beta1"
 	cfgcm "github.com/apecloud/kubeblocks/pkg/configuration/config_manager"
 	"github.com/apecloud/kubeblocks/pkg/configuration/core"
 	cfgutil "github.com/apecloud/kubeblocks/pkg/configuration/util"
+	cfgvalidate "github.com/apecloud/kubeblocks/pkg/configuration/validate"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/factory"
@@ -272,7 +274,8 @@ func UpdateConfigPayload(config *appsv1alpha1.ConfigurationSpec, component *comp
 		configSpec := &config.ConfigItemDetails[i]
 		// check v-scale operation
 		if enableVScaleTrigger(configSpec.ConfigSpec) {
-			resourcePayload := intctrlutil.ResourcesPayloadForComponent(component.Resources)
+			resources := effectiveComponentResources(component)
+			resourcePayload := intctrlutil.ResourcesPayloadForComponent(resources)
 			ret, err := intctrlutil.CheckAndPatchPayload(configSpec, constant.ComponentResourcePayload, resourcePayload)
 			if err != nil {
 				return false, err
@@ -289,6 +292,88 @@ func UpdateConfigPayload(config *appsv1alpha1.ConfigurationSpec, component *comp
 		}
 	}
 	return updated, nil
+}
+
+func PruneResourceDerivedConfigParams(ctx context.Context, cli client.Reader, config *appsv1alpha1.ConfigurationSpec) (bool, error) {
+	if config == nil {
+		return false, nil
+	}
+
+	updated := false
+	resourceParamsByCC := make(map[string][]string)
+	for i := range config.ConfigItemDetails {
+		item := &config.ConfigItemDetails[i]
+		if !enableVScaleTrigger(item.ConfigSpec) ||
+			item.ConfigSpec.ConfigConstraintRef == "" ||
+			len(item.ConfigFileParams) == 0 {
+			continue
+		}
+
+		resourceParams, ok := resourceParamsByCC[item.ConfigSpec.ConfigConstraintRef]
+		if !ok {
+			params, err := resourceDerivedParamsForConstraint(ctx, cli, item.ConfigSpec.ConfigConstraintRef)
+			if err != nil {
+				return false, err
+			}
+			resourceParams = params
+			resourceParamsByCC[item.ConfigSpec.ConfigConstraintRef] = resourceParams
+		}
+		if len(resourceParams) == 0 {
+			continue
+		}
+		updated = pruneConfigFileParams(item, resourceParams) || updated
+	}
+	return updated, nil
+}
+
+func resourceDerivedParamsForConstraint(ctx context.Context, cli client.Reader, ccName string) ([]string, error) {
+	cc := &appsv1beta1.ConfigConstraint{}
+	if err := cli.Get(ctx, client.ObjectKey{Name: ccName}, cc); err != nil {
+		return nil, err
+	}
+	if cc.Spec.ParametersSchema == nil {
+		return nil, nil
+	}
+	return cfgvalidate.ResourceDerivedParameterNames(cc.Spec.ParametersSchema.CUE)
+}
+
+func pruneConfigFileParams(item *appsv1alpha1.ConfigurationItemDetail, resourceParams []string) bool {
+	if item == nil || len(item.ConfigFileParams) == 0 || len(resourceParams) == 0 {
+		return false
+	}
+
+	resourceParamSet := make(map[string]struct{}, len(resourceParams))
+	for _, param := range resourceParams {
+		resourceParamSet[param] = struct{}{}
+	}
+
+	updated := false
+	for fileName, params := range item.ConfigFileParams {
+		for param := range params.Parameters {
+			if _, ok := resourceParamSet[param]; !ok {
+				continue
+			}
+			delete(params.Parameters, param)
+			updated = true
+		}
+		if params.Content == nil && len(params.Parameters) == 0 {
+			delete(item.ConfigFileParams, fileName)
+			continue
+		}
+		item.ConfigFileParams[fileName] = params
+	}
+	if len(item.ConfigFileParams) == 0 {
+		item.ConfigFileParams = nil
+	}
+	return updated
+}
+
+func effectiveComponentResources(component *component.SynthesizedComponent) corev1.ResourceRequirements {
+	resources := component.Resources
+	if component.PodSpec == nil || len(component.PodSpec.Containers) == 0 {
+		return resources
+	}
+	return component.PodSpec.Containers[0].Resources
 }
 
 func validRerenderResources(configSpec *appsv1alpha1.ComponentConfigSpec) bool {
