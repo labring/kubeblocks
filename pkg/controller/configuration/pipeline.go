@@ -113,6 +113,9 @@ func (p *pipeline) UpdateConfiguration() *pipeline {
 		if intctrlutil.SetControllerReference(p.ctx.Cluster, expectedConfiguration) != nil {
 			return
 		}
+		if _, err = UpdateConfigPayload(&expectedConfiguration.Spec, p.ctx.Component); err != nil {
+			return
+		}
 
 		existingConfiguration := appsv1alpha1.Configuration{}
 		err = p.ResourceFetcher.Client.Get(p.Context, client.ObjectKeyFromObject(expectedConfiguration), &existingConfiguration)
@@ -222,6 +225,13 @@ func (p *pipeline) updateConfiguration(expected *appsv1alpha1.Configuration, exi
 		return sets
 	}
 
+	updateConfigSpec := func(item appsv1alpha1.ConfigurationItemDetail) appsv1alpha1.ConfigurationItemDetail {
+		if expectedItem := expected.Spec.GetConfigurationItem(item.Name); expectedItem != nil {
+			item.ConfigSpec = expectedItem.ConfigSpec
+		}
+		return item
+	}
+
 	oldSets := fromMap(existing.Spec.ConfigItemDetails)
 	newSets := fromMap(expected.Spec.ConfigItemDetails)
 
@@ -231,7 +241,7 @@ func (p *pipeline) updateConfiguration(expected *appsv1alpha1.Configuration, exi
 	newConfigItems := make([]appsv1alpha1.ConfigurationItemDetail, 0)
 	for _, item := range existing.Spec.ConfigItemDetails {
 		if !delSets.InArray(item.Name) {
-			newConfigItems = append(newConfigItems, item)
+			newConfigItems = append(newConfigItems, updateConfigSpec(item))
 		}
 	}
 	for _, item := range expected.Spec.ConfigItemDetails {
@@ -243,6 +253,9 @@ func (p *pipeline) updateConfiguration(expected *appsv1alpha1.Configuration, exi
 	patch := client.MergeFrom(existing)
 	updated := existing.DeepCopy()
 	updated.Spec.ConfigItemDetails = newConfigItems
+	if _, err := UpdateConfigPayload(&updated.Spec, p.ctx.Component); err != nil {
+		return err
+	}
 	return p.Client.Patch(p.Context, updated, patch)
 }
 

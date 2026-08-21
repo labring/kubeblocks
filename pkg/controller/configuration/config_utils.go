@@ -251,3 +251,33 @@ func foundPortByConfigManagerPortName(container corev1.Container) *corev1.Contai
 	}
 	return nil
 }
+
+// UpdateConfigPayload updates payloads that trigger configuration re-rendering.
+func UpdateConfigPayload(config *appsv1alpha1.ConfigurationSpec, synthesizedComp *component.SynthesizedComponent) (bool, error) {
+	updated := false
+	for i := range config.ConfigItemDetails {
+		configItem := &config.ConfigItemDetails[i]
+		if !enableResourceTrigger(configItem.ConfigSpec) {
+			continue
+		}
+		resourcePayload := intctrlutil.ResourcesPayloadForComponent(effectiveComponentResources(synthesizedComp))
+		patched, err := intctrlutil.CheckAndPatchPayload(configItem, constant.ComponentResourcePayload, resourcePayload)
+		if err != nil {
+			return false, err
+		}
+		updated = updated || patched
+	}
+	return updated, nil
+}
+
+func effectiveComponentResources(synthesizedComp *component.SynthesizedComponent) corev1.ResourceRequirements {
+	if synthesizedComp == nil || synthesizedComp.PodSpec == nil || len(synthesizedComp.PodSpec.Containers) == 0 {
+		return corev1.ResourceRequirements{}
+	}
+	return synthesizedComp.PodSpec.Containers[0].Resources
+}
+
+func enableResourceTrigger(configSpec *appsv1alpha1.ComponentConfigSpec) bool {
+	return configSpec != nil &&
+		slices.Contains(configSpec.ReRenderResourceTypes, appsv1alpha1.ComponentResourceType)
+}

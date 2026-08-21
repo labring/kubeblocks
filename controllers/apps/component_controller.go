@@ -147,6 +147,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			&componentAccountProvisionTransformer{},
 			// handle tls volume and cert
 			&componentTLSTransformer{},
+			// rerender parameters after resource changes
+			&componentRelatedParametersTransformer{Client: r.Client},
 			// handle component custom volumes
 			&componentCustomVolumesTransformer{},
 			// resolve and build vars for template and Env
