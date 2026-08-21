@@ -53,5 +53,8 @@ func (c *componentRelatedParametersTransformer) Transform(ctx graph.TransformCon
 	if !updated {
 		return nil
 	}
+	if _, err = configuration.PruneResourceDerivedConfigParams(ctx.GetContext(), c.Client, &configNew.Spec); err != nil {
+		return err
+	}
 	return c.Patch(ctx.GetContext(), configNew, client.MergeFrom(config.DeepCopy()))
 }

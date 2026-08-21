@@ -113,7 +113,9 @@ func (p *pipeline) UpdateConfiguration() *pipeline {
 		if intctrlutil.SetControllerReference(p.ctx.Component, expectedConfiguration) != nil {
 			return
 		}
-		_, _ = UpdateConfigPayload(&expectedConfiguration.Spec, p.ctx.SynthesizedComponent)
+		if _, err = UpdateConfigPayload(&expectedConfiguration.Spec, p.ctx.SynthesizedComponent); err != nil {
+			return err
+		}
 
 		existingConfiguration := appsv1alpha1.Configuration{}
 		err = p.ResourceFetcher.Client.Get(p.Context, client.ObjectKeyFromObject(expectedConfiguration), &existingConfiguration)
@@ -253,6 +255,15 @@ func (p *pipeline) updateConfiguration(expected *appsv1alpha1.Configuration, exi
 	patch := client.MergeFrom(existing)
 	updated := existing.DeepCopy()
 	updated.Spec.ConfigItemDetails = newConfigItems
+	payloadUpdated, err := UpdateConfigPayload(&updated.Spec, p.ctx.SynthesizedComponent)
+	if err != nil {
+		return err
+	}
+	if payloadUpdated {
+		if _, err = PruneResourceDerivedConfigParams(p.Context, p.Client, &updated.Spec); err != nil {
+			return err
+		}
+	}
 	return p.Client.Patch(p.Context, updated, patch)
 }
 

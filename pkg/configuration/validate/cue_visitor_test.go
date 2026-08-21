@@ -179,6 +179,31 @@ func TestCueTypeExtractorVisit(t *testing.T) {
 	}
 }
 
+func TestResourceDerivedParameterNames(t *testing.T) {
+	cue := `
+#RedisParameter: {
+	maxmemory?: int @storeResource()
+	maxclients: int
+	"pg_transport.work_mem"?: int @storeResource(1KB)
+}
+configuration: #RedisParameter & {
+}
+`
+
+	got, err := ResourceDerivedParameterNames(cue)
+	require.NoError(t, err)
+	require.Equal(t, []string{"maxmemory", "pg_transport.work_mem"}, got)
+
+	got, err = ResourceDerivedParameterNames(`
+configuration: {
+	maxmemory?: int @storeResource()
+	maxclients: int
+}
+`)
+	require.NoError(t, err)
+	require.Equal(t, []string{"maxmemory"}, got)
+}
+
 func TestTransNumberOrBoolType(t *testing.T) {
 	type args struct {
 		t        CueType
