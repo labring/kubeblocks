@@ -1,0 +1,161 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: polardbx-mysqldump
+spec:
+  backupType: Full
+  env:
+  - name: DP_DB_PORT
+    value: "3306"
+  backup:
+    backupData:
+      image: docker.io/apecloud/mysql:8.0.30
+      runOnTargetPodNode: false
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+      command:
+      - bash
+      - -c
+      - |
+        #!/bin/bash
+        set -e
+        set -o pipefail
+
+        function handle_exit() {
+          exit_code=$?
+          if [ $exit_code -ne 0 ]; then
+            echo "failed with exit code $exit_code"
+            touch "${DP_BACKUP_INFO_FILE}.exit"
+            exit 1
+          fi
+        }
+        trap handle_exit EXIT
+
+        export PATH="$PATH:$DP_DATASAFED_BIN_PATH"
+        export DATASAFED_BACKEND_BASE_PATH="$DP_BACKUP_BASE_PATH"
+        export MYSQL_PWD="${DP_DB_PASSWORD}"
+
+        START_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        MYSQL="mysql -h ${DP_DB_HOST} -P ${DP_DB_PORT:-3306} -u ${DP_DB_USER} --batch --skip-column-names"
+        MYSQLDUMP="mysqldump -h ${DP_DB_HOST} -P ${DP_DB_PORT:-3306} -u ${DP_DB_USER}"
+
+        DATABASES=$(${MYSQL} -e "SHOW DATABASES;" | awk '
+          !/^(information_schema|mysql|performance_schema|sys|polardbx|polardbx_meta_db|__cdc__)$/ &&
+          $0 !~ /^__drds_/ { printf "%s ", $0 }
+        ')
+
+        if [ -z "${DATABASES// }" ]; then
+          echo "No user databases found. Writing an empty logical backup."
+          printf '%s\n' '-- no user databases found' | datasafed push -z zstd-fastest - "/${DP_BACKUP_NAME}.sql.zst"
+        else
+          ${MYSQLDUMP} \
+            --databases ${DATABASES} \
+            --skip-lock-tables \
+            --quick \
+            --hex-blob \
+            --default-character-set=utf8mb4 \
+            --set-gtid-purged=OFF \
+            --column-statistics=0 \
+            --no-tablespaces \
+          | datasafed push -z zstd-fastest - "/${DP_BACKUP_NAME}.sql.zst"
+        fi
+
+        STOP_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        TOTAL_SIZE=$(datasafed stat / | grep TotalSize | awk '{print $2}')
+        echo "{\"totalSize\":\"$TOTAL_SIZE\",\"timeRange\":{\"start\":\"${START_TIME}\",\"end\":\"${STOP_TIME}\"}}" > "${DP_BACKUP_INFO_FILE}"
+  restore:
+    postReady:
+    - job:
+        image: docker.io/apecloud/mysql:8.0.30
+        runOnTargetPodNode: false
+        command:
+        - bash
+        - -c
+        - |
+          #!/bin/bash
+          set -e
+          set -o pipefail
+
+          export MYSQL_PWD="${DP_DB_PASSWORD}"
+
+          MYSQL_HOST="${DP_DB_HOST}"
+          MYSQL_PORT="${DP_DB_PORT:-3306}"
+          MYSQL_USER="${DP_DB_USER}"
+          BACKUP_FILE="/backupdata${DP_BACKUP_BASE_PATH}/${DP_BACKUP_NAME}.sql.zst"
+
+          MYSQL=(mysql --force -h "${MYSQL_HOST}" -P "${MYSQL_PORT}" -u "${MYSQL_USER}")
+          MYSQLADMIN=(mysqladmin -h "${MYSQL_HOST}" -P "${MYSQL_PORT}" -u "${MYSQL_USER}")
+
+          for i in $(seq 1 60); do
+            if "${MYSQLADMIN[@]}" ping --silent; then
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "target CN ${MYSQL_HOST}:${MYSQL_PORT} is not ready"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ ! -f "${BACKUP_FILE}" ]; then
+            echo "backup file ${BACKUP_FILE} does not exist"
+            exit 1
+          fi
+
+          if [ -n "${RESTORE_DATABASE:-}" ]; then
+            if [ -z "${RESTORE_SOURCE_DATABASE:-}" ]; then
+              echo "RESTORE_SOURCE_DATABASE is required when RESTORE_DATABASE is set"
+              exit 1
+            fi
+            if [ "${RESTORE_SKIP_CREATE_DATABASE:-false}" = "true" ]; then
+              zstd -dc "${BACKUP_FILE}" \
+              | sed \
+                  -e "s/\`${RESTORE_SOURCE_DATABASE}\`/\`${RESTORE_DATABASE}\`/g" \
+                  -e '/^CREATE DATABASE /d' \
+              | "${MYSQL[@]}"
+            else
+              zstd -dc "${BACKUP_FILE}" \
+              | sed -e "s/\`${RESTORE_SOURCE_DATABASE}\`/\`${RESTORE_DATABASE}\`/g" \
+              | "${MYSQL[@]}"
+            fi
+          else
+            zstd -dc "${BACKUP_FILE}" | "${MYSQL[@]}"
+          fi
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: polardbx-backup-policy-template
+  labels:
+    clusterdefinition.kubeblocks.io/name: polardbx
+    service-kind/polardbx: "true"
+spec:
+  clusterDefinitionRef: polardbx
+  backupPolicies:
+  - componentDefRef: cn
+    target:
+      connectionCredentialKey: {}
+      role: ""
+      strategy: Any
+    backupMethods:
+    - name: mysqldump
+      actionSetName: polardbx-mysqldump
+      snapshotVolumes: false
+      env:
+      # KubeBlocks 0.9 copies target container env into the backup job. PolarDB-X CN
+      # resourceFieldRef envs reference the engine container, which does not exist in
+      # the backup job, so override them with plain values.
+      - name: cpuCore
+        value: "1"
+      - name: memSize
+        value: "1073741824"
+      - name: cpu_cores
+        value: "1"
+      - name: memory
+        value: "1073741824"
+    schedules:
+    - backupMethod: mysqldump
+      cronExpression: "0 18 * * *"
+      enabled: false
+      retentionPeriod: 7d

@@ -231,7 +231,15 @@ func (r *restoreJobBuilder) addTargetPodAndCredentialEnv(pod *corev1.Pod,
 	var env []corev1.EnvVar
 	// Note: now only add the first container envs.
 	if len(pod.Spec.Containers) != 0 {
-		env = pod.Spec.Containers[0].Env
+		env = make([]corev1.EnvVar, len(pod.Spec.Containers[0].Env))
+		for i := range pod.Spec.Containers[0].Env {
+			env[i] = *pod.Spec.Containers[0].Env[i].DeepCopy()
+			if env[i].ValueFrom != nil &&
+				env[i].ValueFrom.ResourceFieldRef != nil &&
+				env[i].ValueFrom.ResourceFieldRef.ContainerName != "" {
+				env[i].ValueFrom.ResourceFieldRef.ContainerName = Restore
+			}
+		}
 		r.envFrom = pod.Spec.Containers[0].EnvFrom
 	}
 	env = append(env, corev1.EnvVar{Name: dptypes.DPDBHost, Value: intctrlutil.BuildPodHostDNS(pod)})

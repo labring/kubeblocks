@@ -1,0 +1,15 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: BackupRepo
+metadata:
+  name: polardbx-pvc-repo
+  annotations:
+    dataprotection.kubeblocks.io/is-default-repo: "true"
+spec:
+  storageProviderRef: pvc
+  accessMethod: Mount
+  pvReclaimPolicy: Retain
+  volumeCapacity: 20Gi
+  config:
+    accessMode: ReadWriteOnce
+    storageClassName: openebs-backup
+    volumeMode: Filesystem
