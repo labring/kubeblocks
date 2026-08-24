@@ -318,6 +318,24 @@ var _ = Describe("Backup Deleter Test", func() {
 
 			By("create cluster to restore")
 			testdp.NewFakeCluster(&testCtx)
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace(testCtx.DefaultNamespace),
+				client.MatchingLabels(matchLabels))).Should(Succeed())
+			for i := range podList.Items {
+				pod := &podList.Items[i]
+				Expect(testapps.ChangeObj(&testCtx, pod, func(pod *corev1.Pod) {
+					pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+						Name: "memory",
+						ValueFrom: &corev1.EnvVarSource{
+							ResourceFieldRef: &corev1.ResourceFieldSelector{
+								ContainerName: "engine",
+								Resource:      "limits.memory",
+							},
+						},
+					})
+				})).Should(Succeed())
+			}
 
 			By("test with execAction and expect for creating 2 exec job")
 			target := utils.GetBackupStatusTarget(backupSet.Backup, restoreMGR.Restore.Spec.Backup.SourceTargetName)
@@ -344,6 +362,14 @@ var _ = Describe("Backup Deleter Test", func() {
 				}
 			}
 			Expect(backupStopTimeEnv).Should(Equal("2023-01-01 18:00:00"))
+			var resourceFieldContainer string
+			for _, v := range jobs[0].Spec.Template.Spec.Containers[0].Env {
+				if v.Name == "memory" && v.ValueFrom != nil && v.ValueFrom.ResourceFieldRef != nil {
+					resourceFieldContainer = v.ValueFrom.ResourceFieldRef.ContainerName
+					break
+				}
+			}
+			Expect(resourceFieldContainer).Should(Equal(Restore))
 			checkVolumes(jobs[0], testdp.DataVolumeName, existVolume)
 		}
 

@@ -1,0 +1,15 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Backup
+metadata:
+  name: polardbx-cluster-backup
+  namespace: default
+spec:
+  # Specifies the backup method name that is defined in the backup policy.
+  # - mysqldump
+  backupMethod: mysqldump
+  # Specifies the backup policy to be applied for this backup.
+  backupPolicyName: polardbx-cluster-cn-backup-policy
+  # Determines whether the backup contents stored in the backup repository should be deleted when the Backup CR is deleted.
+  # - Retain keeps the backup content in the backup repository.
+  # - Delete deletes the backup content from the backup repository.
+  deletionPolicy: Delete

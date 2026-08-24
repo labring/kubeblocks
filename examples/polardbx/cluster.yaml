@@ -1,0 +1,85 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardbx-cluster
+  namespace: default
+spec:
+  clusterDefinitionRef: polardbx
+  clusterVersionRef: polardbx-v2.3
+  terminationPolicy: Delete
+  affinity:
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+  componentSpecs:
+  - name: gms
+    componentDefRef: gms
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+  - name: dn
+    componentDefRef: dn
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+  - name: cn
+    componentDefRef: cn
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+  - name: cdc
+    componentDefRef: cdc
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
