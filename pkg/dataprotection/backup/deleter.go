@@ -100,7 +100,10 @@ func (d *Deleter) DeleteBackupFiles(backup *dpv1alpha1.Backup) (DeletionStatus, 
 		backupRepo = &dpv1alpha1.BackupRepo{}
 		if err = d.Client.Get(d.Ctx, client.ObjectKey{Name: backup.Status.BackupRepoName}, backupRepo); err != nil {
 			if apierrors.IsNotFound(err) {
-				return DeletionStatusSucceeded, nil
+				return DeletionStatusFailed, fmt.Errorf(
+					"BackupRepo/%s NotFound, missing repository credentials, cannot create deletion job; "+
+						"S3 status is unknown and cannot be treated as deleted",
+					backup.Status.BackupRepoName)
 			}
 			return DeletionStatusUnknown, err
 		}
@@ -116,25 +119,36 @@ func (d *Deleter) DeleteBackupFiles(backup *dpv1alpha1.Backup) (DeletionStatus, 
 			return DeletionStatusSucceeded, nil
 		}
 
-		// check if the backup PVC exists, if not, skip to delete backup files
+		// check if the backup PVC exists, if not, refuse to treat files as deleted
 		pvcKey := client.ObjectKey{Namespace: backup.Namespace, Name: legacyPVCName}
 		if err = d.Client.Get(d.Ctx, pvcKey, &corev1.PersistentVolumeClaim{}); err != nil {
 			if apierrors.IsNotFound(err) {
-				return DeletionStatusSucceeded, nil
+				return DeletionStatusFailed, fmt.Errorf(
+					"PersistentVolumeClaim %s/%s NotFound, cannot mount repository to delete files; "+
+						"S3/storage status is unknown and cannot be treated as deleted",
+					backup.Namespace, legacyPVCName)
 			}
 			return DeletionStatusUnknown, err
 		}
 	}
 
 	backupFilePath := backup.Status.Path
-	if backupFilePath == "" || (!strings.Contains(backupFilePath, backup.Name)) {
+	if backupFilePath == "" {
+		d.Log.Info("skip deleting backup files because backup file path is empty",
+			"backup", backup.Name)
+		return DeletionStatusSucceeded, nil
+	}
+	if !strings.Contains(backupFilePath, backup.Name) {
 		// For compatibility: the FilePath field is changing from time to time,
 		// and it may not contain the backup name as a path component if the Backup object
 		// was created in a previous version. In this case, it's dangerous to execute
 		// the deletion command. For example, files belongs to other Backups can be deleted as well.
-		d.Log.Info("skip deleting backup files because backup file path is invalid",
+		d.Log.Info("refuse deleting backup files because backup file path is invalid",
 			"backupFilePath", backupFilePath, "backup", backup.Name)
-		return DeletionStatusSucceeded, nil
+		return DeletionStatusFailed, fmt.Errorf(
+			"status.path %q is invalid for backup %s, refuse to delete files to avoid removing other backups; "+
+				"S3 status is unknown and cannot be treated as deleted",
+			backupFilePath, backup.Name)
 	}
 
 	// make sure the path has a leading slash
@@ -168,26 +182,37 @@ func (d *Deleter) buildDeleteBackupFilesScript(backupPath string) string {
 	// this script first deletes the directory where the backup is located (including files
 	// in the directory), and then traverses up the path level by level to clean up empty directories.
 	deleteScript := fmt.Sprintf(`
+set -e
 set -x
 export PATH="$PATH:$%s"
-targetPath="%s"
+targetPath=%s
 
 echo "removing backup files in ${targetPath}"
+
 DATASAFED_KOPIA_MAINTENANCE=true datasafed rm -r "${targetPath}"
 
-# remove empty dirs from leaf to root
-function rmdirs() {
+# The assignment fails the script when listing fails, so an unreachable repository
+# is never mistaken for an empty one. Keep it out of an "if" condition, which would
+# discard the exit status of the substitution.
+remaining=$(datasafed list "${targetPath}")
+if [ -n "${remaining}" ]; then
+	echo "target ${targetPath} still exists after deletion" >&2
+	exit 1
+fi
+
+# remove empty dirs from leaf to root; best-effort, do not fail the job
+rmdirs() {
 	curr="$1"
 	while true; do
 		curr=$(dirname "${curr}")
-		if [ "${curr}" == "/" ]; then
+		if [ "${curr}" = "/" ]; then
 			echo "reach to root, done"
 			break
 		fi
-		result=$(datasafed list "${curr}")
+		result=$(datasafed list "${curr}" || true)
 		if [ -z "$result" ]; then
 			echo "${curr} is empty, removing it..."
-			datasafed rmdir "${curr}"
+			datasafed rmdir "${curr}" || true
 		else
 			echo "${curr} is not empty, done"
 			break
@@ -195,29 +220,34 @@ function rmdirs() {
 	done
 }
 
-if [ "${DATASAFED_KOPIA_REPO_ROOT}" == "" ]; then
+if [ "${DATASAFED_KOPIA_REPO_ROOT}" = "" ]; then
 	# kopia is not used, simply remove empty dirs from the storage
-	rmdirs "${targetPath}"
+	rmdirs "${targetPath}" || true
 else
 	# remove empty dirs from the kopia repository
-	rmdirs "${targetPath}"
+	rmdirs "${targetPath}" || true
 
-	# remove the kopia repository itself from the storage if it's empty
+	# remove the kopia repository itself from the storage if it's empty. Listing must not
+	# be tolerated here: a failed list would look empty and wipe the whole repository.
 	result=$(datasafed list "/")
 	if [ -z "$result" ]; then
 		kopiaRepoPath="${DATASAFED_KOPIA_REPO_ROOT}"
 		unset DATASAFED_KOPIA_REPO_ROOT
 		echo "kopia repository at '${kopiaRepoPath}' is empty, removing it from the storage..."
-		datasafed rm -r "${kopiaRepoPath}"
-		datasafed rm -r "${kopiaRepoPath}.meta"
+		datasafed rm -r "${kopiaRepoPath}" || true
+		datasafed rm -r "${kopiaRepoPath}.meta" || true
 
 		# remove empty dirs from the storage
-		rmdirs "${kopiaRepoPath}"
+		rmdirs "${kopiaRepoPath}" || true
 	fi
 fi
-	`, dptypes.DPDatasafedBinPath, backupPath)
+	`, dptypes.DPDatasafedBinPath, quoteForPOSIXShell(backupPath))
 
 	return deleteScript
+}
+
+func quoteForPOSIXShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func (d *Deleter) createDeleteBackupFilesJob(
