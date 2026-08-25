@@ -1057,7 +1057,7 @@ func (r *BackupRepoReconciler) constructPVCByTemplate(
 }
 
 func (r *BackupRepoReconciler) listAssociatedBackups(
-	ctx context.Context, repo *dpv1alpha1.BackupRepo, extraSelector map[string]string) ([]*dpv1alpha1.Backup, error) {
+	ctx context.Context, repo *dpv1alpha1.BackupRepo, extraSelector map[string]string, includeFailed bool) ([]*dpv1alpha1.Backup, error) {
 	// list backups associated with the repo
 	backupList := &dpv1alpha1.BackupList{}
 	selectors := client.MatchingLabels{
@@ -1070,7 +1070,8 @@ func (r *BackupRepoReconciler) listAssociatedBackups(
 	var filtered []*dpv1alpha1.Backup
 	for idx := range backupList.Items {
 		backup := &backupList.Items[idx]
-		if backup.Status.Phase == dpv1alpha1.BackupPhaseFailed &&
+		if !includeFailed &&
+			backup.Status.Phase == dpv1alpha1.BackupPhaseFailed &&
 			backup.Labels[dptypes.BackupTypeLabelKey] != string(dpv1alpha1.BackupTypeContinuous) {
 			continue
 		}
@@ -1082,7 +1083,7 @@ func (r *BackupRepoReconciler) listAssociatedBackups(
 func (r *BackupRepoReconciler) prepareForAssociatedBackups(reconCtx *reconcileContext) error {
 	backups, err := r.listAssociatedBackups(reconCtx.Ctx, reconCtx.repo, map[string]string{
 		dataProtectionWaitRepoPreparationKey: trueVal,
-	})
+	}, false)
 	if err != nil {
 		return err
 	}
@@ -1351,7 +1352,7 @@ func (r *BackupRepoReconciler) deleteExternalResources(
 	// TODO: block deletion if any BackupPolicy is referencing to this repo
 
 	// check if the repo is still being used by any backup
-	if backups, err := r.listAssociatedBackups(reqCtx.Ctx, repo, nil); err != nil {
+	if backups, err := r.listAssociatedBackups(reqCtx.Ctx, repo, nil, true); err != nil {
 		return err
 	} else if len(backups) > 0 {
 		_ = updateCondition(reqCtx.Ctx, r.Client, repo, ConditionTypeDerivedObjectsDeleted,
