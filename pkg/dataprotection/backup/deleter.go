@@ -189,13 +189,39 @@ targetPath=%s
 
 echo "removing backup files in ${targetPath}"
 
-DATASAFED_KOPIA_MAINTENANCE=true datasafed rm -r "${targetPath}"
+# datasafed reports a missing path as "directory not found" (non-zero), not as an
+# empty listing. Credential and network errors must still fail the job.
+datasafed_is_absent() {
+	out=$(datasafed list "$1" 2>&1) || true
+	if [ -z "$out" ]; then
+		return 0
+	fi
+	case "$out" in
+		*[Dd]irectory\ not\ found*|*object\ not\ found*|*NoSuchKey*|*no\ such\ file*|*not\ exist*)
+			return 0
+			;;
+	esac
+	echo "$out" >&2
+	return 1
+}
 
-# The assignment fails the script when listing fails, so an unreachable repository
-# is never mistaken for an empty one. Keep it out of an "if" condition, which would
-# discard the exit status of the substitution.
-remaining=$(datasafed list "${targetPath}")
-if [ -n "${remaining}" ]; then
+set +e
+rm_out=$(DATASAFED_KOPIA_MAINTENANCE=true datasafed rm -r "${targetPath}" 2>&1)
+rm_rc=$?
+set -e
+if [ "$rm_rc" -ne 0 ]; then
+	case "$rm_out" in
+		*[Dd]irectory\ not\ found*|*object\ not\ found*|*NoSuchKey*|*no\ such\ file*|*not\ exist*)
+			echo "target ${targetPath} already absent, skip removing"
+			;;
+		*)
+			echo "failed to remove ${targetPath}: ${rm_out}" >&2
+			exit 1
+			;;
+	esac
+fi
+
+if ! datasafed_is_absent "${targetPath}"; then
 	echo "target ${targetPath} still exists after deletion" >&2
 	exit 1
 fi

@@ -132,10 +132,13 @@ var _ = Describe("Backup Deleter Test", func() {
 			Expect(script).NotTo(ContainSubstring("function rmdirs"))
 			Expect(script).To(ContainSubstring(`[ "${curr}" = "/" ]`))
 			Expect(script).To(ContainSubstring("still exists after deletion"))
-			// the exit status of the verification must not be swallowed, otherwise an
-			// unreachable repository would look like an already deleted one
-			Expect(script).To(ContainSubstring(`remaining=$(datasafed list "${targetPath}")` + "\n"))
+			Expect(script).To(ContainSubstring("already absent, skip removing"))
+			Expect(script).To(ContainSubstring("datasafed_is_absent"))
+			Expect(script).To(ContainSubstring(`*[Dd]irectory\ not\ found*`))
+			Expect(script).NotTo(ContainSubstring(`*[Nn]ot\ found*`))
+			// kopia emptiness must still fail closed on a real list error
 			Expect(script).To(ContainSubstring(`result=$(datasafed list "/")` + "\n"))
+			Expect(script).NotTo(ContainSubstring(`result=$(datasafed list "/" || true)`))
 			Expect(quoteForPOSIXShell("path/with/'quote")).To(Equal(`'path/with/'"'"'quote'`))
 		})
 
