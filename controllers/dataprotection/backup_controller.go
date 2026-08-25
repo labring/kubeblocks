@@ -211,6 +211,15 @@ func (r *BackupReconciler) deleteBackupFiles(reqCtx intctrlutil.RequestCtx, back
 		return r.Patch(reqCtx.Ctx, backup, patch)
 	}
 
+	// Releasing the backup without cleaning its files has to stay possible, otherwise an
+	// unreachable repository blocks the deletion forever. Requiring an annotation keeps the
+	// decision recorded on the object, unlike removing the finalizer by hand.
+	if backup.Annotations[dptypes.SkipDeleteBackupFilesAnnotationKey] == trueVal {
+		r.Recorder.Event(backup, corev1.EventTypeWarning, "SkipDeleteBackupFiles",
+			fmt.Sprintf("skip deleting backup files at %q, they may be left in the backup repository", backup.Status.Path))
+		return deleteBackup()
+	}
+
 	deleter := &dpbackup.Deleter{
 		RequestCtx: reqCtx,
 		Client:     r.Client,
