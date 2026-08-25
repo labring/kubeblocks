@@ -20,13 +20,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package multicluster
 
 import (
+	"context"
 	"fmt"
 
 	"golang.org/x/exp/maps"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
@@ -82,8 +85,53 @@ func (m *manager) Own(b *builder.Builder, obj, owner client.Object) Manager {
 func (m *manager) Watch(b *builder.Builder, obj client.Object, eventHandler handler.EventHandler, opts ...builder.WatchesOption) Manager {
 	for k, c := range m.caches {
 		if c != nil {
-			b.WatchesRawSource(source.Kind(m.caches[k], obj), eventHandler, opts...)
+			b.WatchesRawSource(
+				source.Kind(m.caches[k], obj),
+				&placementEventHandler{placement: k, delegate: eventHandler},
+				opts...,
+			)
 		}
 	}
 	return m
+}
+
+// placementEventHandler preserves the worker-cluster identity of cache events.
+// Kubernetes-generated objects such as Endpoints do not inherit the placement
+// annotation from their Service, so downstream handlers must be able to route
+// follow-up reads using the event context.
+type placementEventHandler struct {
+	placement string
+	delegate  handler.EventHandler
+}
+
+func (h *placementEventHandler) Create(
+	ctx context.Context,
+	event event.CreateEvent,
+	queue workqueue.RateLimitingInterface,
+) {
+	h.delegate.Create(IntoContext(ctx, h.placement), event, queue)
+}
+
+func (h *placementEventHandler) Update(
+	ctx context.Context,
+	event event.UpdateEvent,
+	queue workqueue.RateLimitingInterface,
+) {
+	h.delegate.Update(IntoContext(ctx, h.placement), event, queue)
+}
+
+func (h *placementEventHandler) Delete(
+	ctx context.Context,
+	event event.DeleteEvent,
+	queue workqueue.RateLimitingInterface,
+) {
+	h.delegate.Delete(IntoContext(ctx, h.placement), event, queue)
+}
+
+func (h *placementEventHandler) Generic(
+	ctx context.Context,
+	event event.GenericEvent,
+	queue workqueue.RateLimitingInterface,
+) {
+	h.delegate.Generic(IntoContext(ctx, h.placement), event, queue)
 }
