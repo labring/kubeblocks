@@ -266,15 +266,11 @@ func (s *CheckRole) buildGlobalRoleSnapshot(cluster *dcs.Cluster, mgr engines.DB
 			// get old primary and set it's role to none
 			if strings.EqualFold(member.Role, role) {
 				s.logger.Info("there is a another leader", "member", member.Name)
-				if member.IsLorryReady() {
-					s.logger.Info("another leader's lorry is online, just ignore", "member", member.Name)
-					continue
-				}
 				s.logger.Info("reset old leader role to none", "member", member.Name)
 				roleSnapshot.PodRoleNamePairs = append(roleSnapshot.PodRoleNamePairs, common.PodRoleNamePair{
 					PodName:  member.Name,
 					RoleName: "",
-					PodUID:   cluster.GetMemberWithName(member.Name).UID,
+					PodUID:   member.UID,
 				})
 			}
 		}

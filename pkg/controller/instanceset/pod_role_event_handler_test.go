@@ -28,6 +28,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -99,6 +100,7 @@ var _ = Describe("pod role label event handler test", func() {
 					Expect(pd.Labels).ShouldNot(BeNil())
 					Expect(pd.Labels[RoleLabelKey]).Should(Equal(role.Name))
 					Expect(pd.Labels[AccessModeLabelKey]).Should(BeEquivalentTo(role.AccessMode))
+					Expect(pd.Annotations[constant.LastKnownRoleAnnotationKey]).Should(Equal(role.Name))
 					return nil
 				}).Times(1)
 			k8sMock.EXPECT().
@@ -169,6 +171,98 @@ var _ = Describe("pod role label event handler test", func() {
 					return nil
 				}).Times(1)
 			Expect(handler.Handle(cli, reqCtx, nil, event)).Should(Equal(updateErr))
+		})
+	})
+
+	Context("updatePodRoleLabel function", func() {
+		It("should retain or clear the last known role according to the snapshot source", func() {
+			reqCtx := intctrlutil.RequestCtx{
+				Ctx: ctx,
+				Log: logger,
+			}
+			role := workloads.ReplicaRole{
+				Name:       "primary",
+				AccessMode: workloads.ReadWriteMode,
+			}
+			its := workloads.InstanceSet{
+				Spec: workloads.InstanceSetSpec{
+					Roles: []workloads.ReplicaRole{role},
+				},
+			}
+
+			k8sMock.EXPECT().
+				Update(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, pod *corev1.Pod, _ ...client.UpdateOption) error {
+					switch pod.Name {
+					case "confirmed-primary":
+						Expect(pod.Labels[RoleLabelKey]).Should(Equal(role.Name))
+						Expect(pod.Annotations[constant.LastKnownRoleAnnotationKey]).Should(Equal(role.Name))
+					case "local-empty-role":
+						Expect(pod.Labels).ShouldNot(HaveKey(RoleLabelKey))
+						Expect(pod.Annotations[constant.LastKnownRoleAnnotationKey]).Should(Equal(role.Name))
+					case "global-empty-role":
+						Expect(pod.Labels).ShouldNot(HaveKey(RoleLabelKey))
+						Expect(pod.Annotations).ShouldNot(HaveKey(constant.LastKnownRoleAnnotationKey))
+					default:
+						Fail("unexpected pod update: " + pod.Name)
+					}
+					return nil
+				}).Times(3)
+
+			confirmedPrimary := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "confirmed-primary",
+					Labels: map[string]string{},
+				},
+			}
+			Expect(updatePodRoleLabel(
+				k8sMock,
+				reqCtx,
+				its,
+				confirmedPrimary,
+				role.Name,
+				"1",
+				false,
+			)).Should(Succeed())
+
+			localEmptyRole := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "local-empty-role",
+					Labels: map[string]string{
+						RoleLabelKey: role.Name,
+					},
+				},
+			}
+			Expect(updatePodRoleLabel(
+				k8sMock,
+				reqCtx,
+				its,
+				localEmptyRole,
+				"",
+				"2",
+				true,
+			)).Should(Succeed())
+
+			globalEmptyRole := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "global-empty-role",
+					Labels: map[string]string{
+						RoleLabelKey: role.Name,
+					},
+					Annotations: map[string]string{
+						constant.LastKnownRoleAnnotationKey: role.Name,
+					},
+				},
+			}
+			Expect(updatePodRoleLabel(
+				k8sMock,
+				reqCtx,
+				its,
+				globalEmptyRole,
+				"",
+				"3",
+				false,
+			)).Should(Succeed())
 		})
 	})
 
