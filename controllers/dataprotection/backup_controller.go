@@ -229,14 +229,19 @@ func (r *BackupReconciler) deleteBackupFiles(reqCtx intctrlutil.RequestCtx, back
 	case dpbackup.DeletionStatusSucceeded:
 		return deleteBackup()
 	case dpbackup.DeletionStatusFailed:
-		failureReason := err.Error()
-		if backup.Status.FailureReason == failureReason {
-			return nil
+		failureReason := "failed to delete backup files"
+		if err != nil {
+			failureReason = err.Error()
 		}
-		backupPatch := client.MergeFrom(backup.DeepCopy())
-		backup.Status.FailureReason = failureReason
-		r.Recorder.Event(backup, corev1.EventTypeWarning, "DeleteBackupFilesFailed", failureReason)
-		return r.Status().Patch(reqCtx.Ctx, backup, backupPatch)
+		if backup.Status.FailureReason != failureReason {
+			backupPatch := client.MergeFrom(backup.DeepCopy())
+			backup.Status.FailureReason = failureReason
+			r.Recorder.Event(backup, corev1.EventTypeWarning, "DeleteBackupFilesFailed", failureReason)
+			if patchErr := r.Status().Patch(reqCtx.Ctx, backup, backupPatch); patchErr != nil {
+				return patchErr
+			}
+		}
+		return intctrlutil.NewRequeueError(time.Minute, "retry deleting backup files")
 	case dpbackup.DeletionStatusDeleting,
 		dpbackup.DeletionStatusUnknown:
 		// wait for the deletion job completed
@@ -270,6 +275,9 @@ func (r *BackupReconciler) handleDeletingPhase(reqCtx intctrlutil.RequestCtx, ba
 	}
 
 	if err := r.deleteBackupFiles(reqCtx, backup); err != nil {
+		if re, ok := err.(intctrlutil.RequeueError); ok {
+			return intctrlutil.RequeueAfter(re.RequeueAfter(), reqCtx.Log, re.Reason())
+		}
 		return intctrlutil.RequeueWithError(err, reqCtx.Log, "")
 	}
 	return intctrlutil.Reconciled()
