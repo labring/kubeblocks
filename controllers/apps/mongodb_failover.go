@@ -40,7 +40,11 @@ const (
 	autoFailoverNotReadyThreshold = 30 * time.Second
 	autoFailoverRetryBase         = 30 * time.Second
 	autoFailoverRetryMax          = 5 * time.Minute
-	autoFailoverNamePrefix        = "kb-mongodb-auto-failover-"
+	// Each failed attempt leaves an OpsRequest behind, so retrying forever
+	// would both flood etcd and slow down every later List. Give up instead
+	// and surface an event for a human to pick up.
+	autoFailoverMaxAttempts = 5
+	autoFailoverNamePrefix  = "kb-mongodb-auto-failover-"
 )
 
 // reconcileMongoDBAutoFailover creates a wildcard switchover request when the
@@ -157,44 +161,33 @@ func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 	); err != nil {
 		return 0, false, err
 	}
-	attempt := 0
-	var lastFailedAt time.Time
-	for i := range opsList.Items {
-		ops := &opsList.Items[i]
-		if !sameComponentSwitchover(
-			ops,
-			transCtx.Cluster.Name,
-			transCtx.SynthesizeComponent.Name,
-		) {
-			continue
-		}
-		switch ops.Status.Phase {
-		case "", appsv1alpha1.OpsPendingPhase, appsv1alpha1.OpsCreatingPhase,
-			appsv1alpha1.OpsRunningPhase, appsv1alpha1.OpsCancellingPhase:
-			return 0, false, nil
-		}
-		if ops.Annotations[operations.AutoFailoverAnnotation] != operations.AutoFailoverAnnotationValue ||
-			ops.Annotations[operations.AutoFailoverEpochAnnotation] != epoch {
-			continue
-		}
-		if ops.Status.Phase == appsv1alpha1.OpsSucceedPhase {
-			return 0, false, nil
-		}
-		opsAttempt, parseErr := strconv.Atoi(ops.Annotations[operations.AutoFailoverAttemptAnnotation])
-		if parseErr != nil || opsAttempt < 0 {
-			opsAttempt = 0
-		}
-		if opsAttempt >= attempt {
-			attempt = opsAttempt + 1
-			lastFailedAt = ops.Status.CompletionTimestamp.Time
-			if lastFailedAt.IsZero() {
-				lastFailedAt = ops.CreationTimestamp.Time
-			}
-		}
+	state := evalAutoFailoverAttempts(
+		opsList.Items,
+		transCtx.Cluster.Name,
+		transCtx.SynthesizeComponent.Name,
+		epoch,
+	)
+	if state.inFlight {
+		// Re-check on a timer rather than relying only on a watch event: a
+		// manually created switchover may carry no timeout and could stay
+		// Running indefinitely.
+		return autoFailoverRetryBase, false, nil
 	}
-	if attempt > 0 && !lastFailedAt.IsZero() {
+	if state.settled {
+		return 0, false, nil
+	}
+	if state.attempt >= autoFailoverMaxAttempts {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(transCtx.Cluster, corev1.EventTypeWarning, "MongoDBAutoFailoverExhausted",
+				"giving up automatic switchover of %s in component %s after %d attempts, manual intervention is required",
+				primaryPod.Name, transCtx.SynthesizeComponent.Name, state.attempt)
+		}
+		return 0, false, nil
+	}
+	attempt := state.attempt
+	if attempt > 0 && !state.lastFailedAt.IsZero() {
 		retryAfter := autoFailoverRetryDelay(attempt - 1)
-		if remaining := retryAfter - time.Since(lastFailedAt); remaining > 0 {
+		if remaining := retryAfter - time.Since(state.lastFailedAt); remaining > 0 {
 			return remaining, false, nil
 		}
 	}
@@ -233,7 +226,12 @@ func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 			},
 		},
 	}
-	if err = controllerutil.SetControllerReference(transCtx.Cluster, ops, r.Scheme); err != nil {
+	// The OpsRequest controller sets a plain owner reference to the same
+	// cluster. Claiming a controller reference here would either be silently
+	// overwritten by it, or fail with AlreadyOwnedError the day another
+	// controller owns the request, which would block every failover. A plain
+	// owner reference is all that garbage collection needs.
+	if err = controllerutil.SetOwnerReference(transCtx.Cluster, ops, r.Scheme); err != nil {
 		return 0, false, err
 	}
 	if err = r.Create(ctx, ops); err != nil {
@@ -245,8 +243,10 @@ func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 		return 0, false, err
 	}
 	if r.Recorder != nil {
-		r.Recorder.Eventf(primaryPod, corev1.EventTypeWarning, "MongoDBAutoFailover",
-			"created automatic switchover OpsRequest %s", ops.Name)
+		// The pod is read from the data context and may live in another cluster,
+		// so anchor the event on the cluster and name the pod in the message.
+		r.Recorder.Eventf(transCtx.Cluster, corev1.EventTypeWarning, "MongoDBAutoFailover",
+			"created automatic switchover OpsRequest %s for NotReady primary %s", ops.Name, primaryPod.Name)
 	}
 	return 0, true, nil
 }
@@ -335,6 +335,64 @@ func autoFailoverSuppressed(transCtx *componentTransformContext) bool {
 	return transCtx != nil &&
 		transCtx.SynthesizeComponent != nil &&
 		isCompStopped(transCtx.SynthesizeComponent)
+}
+
+// autoFailoverState summarises the switchover requests already issued for a
+// component, so the caller can decide between waiting, giving up and issuing a
+// new attempt.
+type autoFailoverState struct {
+	// inFlight means some switchover is still running for this component,
+	// including one a human started, so nothing new may be issued.
+	inFlight bool
+	// settled means this exact failure was already resolved or deliberately
+	// cancelled, and must not be retried under the same epoch.
+	settled bool
+	// attempt is the number to use for the next request, and doubles as the
+	// count of attempts already made against this epoch.
+	attempt      int
+	lastFailedAt time.Time
+}
+
+func evalAutoFailoverAttempts(
+	items []appsv1alpha1.OpsRequest,
+	clusterName string,
+	componentName string,
+	epoch string,
+) autoFailoverState {
+	var state autoFailoverState
+	for i := range items {
+		ops := &items[i]
+		if !sameComponentSwitchover(ops, clusterName, componentName) {
+			continue
+		}
+		switch ops.Status.Phase {
+		case "", appsv1alpha1.OpsPendingPhase, appsv1alpha1.OpsCreatingPhase,
+			appsv1alpha1.OpsRunningPhase, appsv1alpha1.OpsCancellingPhase:
+			state.inFlight = true
+			return state
+		}
+		if ops.Annotations[operations.AutoFailoverAnnotation] != operations.AutoFailoverAnnotationValue ||
+			ops.Annotations[operations.AutoFailoverEpochAnnotation] != epoch {
+			continue
+		}
+		switch ops.Status.Phase {
+		case appsv1alpha1.OpsSucceedPhase, appsv1alpha1.OpsCancelledPhase:
+			state.settled = true
+			return state
+		}
+		opsAttempt, parseErr := strconv.Atoi(ops.Annotations[operations.AutoFailoverAttemptAnnotation])
+		if parseErr != nil || opsAttempt < 0 {
+			opsAttempt = 0
+		}
+		if opsAttempt >= state.attempt {
+			state.attempt = opsAttempt + 1
+			state.lastFailedAt = ops.Status.CompletionTimestamp.Time
+			if state.lastFailedAt.IsZero() {
+				state.lastFailedAt = ops.CreationTimestamp.Time
+			}
+		}
+	}
+	return state
 }
 
 func sameComponentSwitchover(

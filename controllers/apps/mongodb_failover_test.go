@@ -12,7 +12,9 @@ License, or (at your option) any later version.
 package apps
 
 import (
+	"strconv"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -282,6 +284,155 @@ func TestAutoFailoverSuppressed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := autoFailoverSuppressed(tt.transCtx); got != tt.want {
 				t.Fatalf("autoFailoverSuppressed() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutoFailoverRetryDelay(t *testing.T) {
+	tests := []struct {
+		failedAttempt int
+		want          time.Duration
+	}{
+		{failedAttempt: 0, want: 30 * time.Second},
+		{failedAttempt: 1, want: time.Minute},
+		{failedAttempt: 2, want: 2 * time.Minute},
+		{failedAttempt: 3, want: 4 * time.Minute},
+		{failedAttempt: 4, want: autoFailoverRetryMax},
+		{failedAttempt: 100, want: autoFailoverRetryMax},
+	}
+	for _, tc := range tests {
+		if got := autoFailoverRetryDelay(tc.failedAttempt); got != tc.want {
+			t.Errorf("autoFailoverRetryDelay(%d) = %v, want %v", tc.failedAttempt, got, tc.want)
+		}
+	}
+}
+
+const (
+	autoFailoverTestCluster = "demo"
+	autoFailoverTestComp    = "mongodb"
+	autoFailoverTestEpoch   = "ns/demo/mongodb/uid-1/2026-08-25T00:00:00Z"
+)
+
+// autoFailoverTestOps builds a switchover request for the test component. An
+// empty epoch marks a request that was not issued by auto-failover, such as one
+// a human created.
+func autoFailoverTestOps(phase appsv1alpha1.OpsPhase, epoch string, attempt int) appsv1alpha1.OpsRequest {
+	annotations := map[string]string{}
+	if epoch != "" {
+		annotations[operations.AutoFailoverAnnotation] = operations.AutoFailoverAnnotationValue
+		annotations[operations.AutoFailoverEpochAnnotation] = epoch
+		annotations[operations.AutoFailoverAttemptAnnotation] = strconv.Itoa(attempt)
+	}
+	return appsv1alpha1.OpsRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations:       annotations,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		},
+		Spec: appsv1alpha1.OpsRequestSpec{
+			ClusterName: autoFailoverTestCluster,
+			Type:        appsv1alpha1.SwitchoverType,
+			SpecificOpsRequest: appsv1alpha1.SpecificOpsRequest{
+				SwitchoverList: []appsv1alpha1.Switchover{{ComponentName: autoFailoverTestComp}},
+			},
+		},
+		Status: appsv1alpha1.OpsRequestStatus{Phase: phase},
+	}
+}
+
+func TestEvalAutoFailoverAttempts(t *testing.T) {
+	otherComp := autoFailoverTestOps(appsv1alpha1.OpsRunningPhase, "", 0)
+	otherComp.Spec.SwitchoverList[0].ComponentName = "other"
+
+	tests := []struct {
+		name         string
+		items        []appsv1alpha1.OpsRequest
+		wantInFlight bool
+		wantSettled  bool
+		wantAttempt  int
+	}{
+		{
+			name:        "no history issues the first attempt",
+			wantAttempt: 0,
+		},
+		{
+			name:        "a switchover for another component is ignored",
+			items:       []appsv1alpha1.OpsRequest{otherComp},
+			wantAttempt: 0,
+		},
+		{
+			name:         "a running manual switchover blocks a new attempt",
+			items:        []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsRunningPhase, "", 0)},
+			wantInFlight: true,
+		},
+		{
+			name:         "a pending switchover blocks a new attempt",
+			items:        []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsPendingPhase, autoFailoverTestEpoch, 0)},
+			wantInFlight: true,
+		},
+		{
+			name:        "a succeeded attempt settles the epoch",
+			items:       []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsSucceedPhase, autoFailoverTestEpoch, 0)},
+			wantSettled: true,
+		},
+		{
+			name:        "a cancelled attempt settles the epoch and is not retried",
+			items:       []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsCancelledPhase, autoFailoverTestEpoch, 0)},
+			wantSettled: true,
+		},
+		{
+			name:        "a failed attempt bumps the counter",
+			items:       []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsFailedPhase, autoFailoverTestEpoch, 0)},
+			wantAttempt: 1,
+		},
+		{
+			name:        "an aborted attempt counts as failed",
+			items:       []appsv1alpha1.OpsRequest{autoFailoverTestOps(appsv1alpha1.OpsAbortedPhase, autoFailoverTestEpoch, 0)},
+			wantAttempt: 1,
+		},
+		{
+			name: "the counter is independent of list order",
+			items: []appsv1alpha1.OpsRequest{
+				autoFailoverTestOps(appsv1alpha1.OpsFailedPhase, autoFailoverTestEpoch, 1),
+				autoFailoverTestOps(appsv1alpha1.OpsFailedPhase, autoFailoverTestEpoch, 0),
+			},
+			wantAttempt: 2,
+		},
+		{
+			name: "a failure from an older epoch does not count",
+			items: []appsv1alpha1.OpsRequest{
+				autoFailoverTestOps(appsv1alpha1.OpsFailedPhase, "ns/demo/mongodb/uid-0/2026-08-24T00:00:00Z", 3),
+			},
+			wantAttempt: 0,
+		},
+		{
+			name: "exhausting the budget stops further attempts",
+			items: []appsv1alpha1.OpsRequest{
+				autoFailoverTestOps(appsv1alpha1.OpsFailedPhase, autoFailoverTestEpoch, autoFailoverMaxAttempts-1),
+			},
+			wantAttempt: autoFailoverMaxAttempts,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evalAutoFailoverAttempts(
+				tc.items,
+				autoFailoverTestCluster,
+				autoFailoverTestComp,
+				autoFailoverTestEpoch,
+			)
+			if got.inFlight != tc.wantInFlight {
+				t.Errorf("inFlight = %v, want %v", got.inFlight, tc.wantInFlight)
+			}
+			if got.settled != tc.wantSettled {
+				t.Errorf("settled = %v, want %v", got.settled, tc.wantSettled)
+			}
+			if got.attempt != tc.wantAttempt {
+				t.Errorf("attempt = %d, want %d", got.attempt, tc.wantAttempt)
+			}
+			if got.attempt > 0 && got.lastFailedAt.IsZero() {
+				t.Error("lastFailedAt is zero although a failed attempt was counted")
 			}
 		})
 	}
