@@ -30,7 +30,6 @@ import (
 	"github.com/pkg/errors"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
@@ -57,7 +56,6 @@ const (
 	AutoFailoverOldPrimaryPodAnnotation         = "kubeblocks.io/auto-failover-old-primary-pod"
 	AutoFailoverOldPrimaryUIDAnnotation         = "kubeblocks.io/auto-failover-old-primary-uid"
 	AutoFailoverNotReadySinceAnnotation         = "kubeblocks.io/auto-failover-not-ready-since"
-	AutoFailoverPrimaryServiceAnnotation        = "kubeblocks.io/auto-failover-primary-service"
 	AutoFailoverAnnotationValue                 = "true"
 	AutoFailoverOpsTimeoutSeconds         int32 = 300
 	autoFailoverValidationRequeueInterval       = time.Second
@@ -188,8 +186,7 @@ func validateAutoFailover(
 	oldPrimaryName := opsRequest.Annotations[AutoFailoverOldPrimaryPodAnnotation]
 	oldPrimaryUID := opsRequest.Annotations[AutoFailoverOldPrimaryUIDAnnotation]
 	notReadySinceValue := opsRequest.Annotations[AutoFailoverNotReadySinceAnnotation]
-	serviceName := opsRequest.Annotations[AutoFailoverPrimaryServiceAnnotation]
-	if oldPrimaryName == "" || oldPrimaryUID == "" || notReadySinceValue == "" || serviceName == "" {
+	if oldPrimaryName == "" || oldPrimaryUID == "" || notReadySinceValue == "" {
 		return true, false, nil, intctrlutil.NewFatalError(
 			"automatic failover validation annotations are incomplete",
 		)
@@ -253,31 +250,9 @@ func validateAutoFailover(
 				"waiting for the new primary pod to become ready",
 			)
 		}
-		routed, err := autoFailoverPodHasReadyEndpoint(
-			dataCtx,
-			cli,
-			cluster.Namespace,
-			serviceName,
-			primaryPod,
-		)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, false, nil, autoFailoverValidationWaitError(
-					opsRequest,
-					"waiting for the primary service endpoints",
-				)
-			}
-			return true, false, nil, err
-		}
-		if !routed {
-			return true, false, nil, autoFailoverValidationWaitError(
-				opsRequest,
-				"waiting for the primary service to route to the new primary",
-			)
-		}
-		// A different, ready primary behind the primary Service means MongoDB,
-		// role reporting, and routing have converged. Do not step down the
-		// healthy replacement primary.
+		// A different pod holding the role while ready is what the primary
+		// service publishes as its endpoint, so MongoDB, role reporting and
+		// routing have converged. Do not step down the replacement primary.
 		return true, false, nil, nil
 	}
 	if primaryPod.DeletionTimestamp != nil || primaryPod.Status.Phase != corev1.PodRunning {
@@ -300,24 +275,8 @@ func validateAutoFailover(
 		return true, false, nil, nil
 	}
 
-	endpointCount, err := autoFailoverReadyEndpointCount(
-		dataCtx,
-		cli,
-		cluster.Namespace,
-		serviceName,
-	)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, false, nil, autoFailoverValidationWaitError(
-				opsRequest,
-				"waiting for the primary service endpoints",
-			)
-		}
-		return true, false, nil, err
-	}
-	if endpointCount != 0 {
-		return true, false, nil, nil
-	}
+	// The old primary is still the only pod holding the role and it is not
+	// ready, so the primary service has no endpoint left. Step it down.
 	return true, true, primaryPod, nil
 }
 
@@ -359,60 +318,6 @@ func remainingOpsRequestSeconds(opsRequest *appsv1alpha1.OpsRequest) int64 {
 		return 0
 	}
 	return int64((remaining + time.Second - 1) / time.Second)
-}
-
-func autoFailoverReadyEndpointCount(
-	ctx context.Context,
-	cli client.Client,
-	namespace string,
-	serviceName string,
-) (int, error) {
-	endpoints := &corev1.Endpoints{}
-	if err := cli.Get(
-		ctx,
-		types.NamespacedName{Namespace: namespace, Name: serviceName},
-		endpoints,
-		multicluster.InDataContext(),
-	); err != nil {
-		return 0, err
-	}
-	return readyEndpointCountForFailover(endpoints), nil
-}
-
-func autoFailoverPodHasReadyEndpoint(
-	ctx context.Context,
-	cli client.Client,
-	namespace string,
-	serviceName string,
-	pod *corev1.Pod,
-) (bool, error) {
-	endpoints := &corev1.Endpoints{}
-	if err := cli.Get(
-		ctx,
-		types.NamespacedName{Namespace: namespace, Name: serviceName},
-		endpoints,
-		multicluster.InDataContext(),
-	); err != nil {
-		return false, err
-	}
-	for _, subset := range endpoints.Subsets {
-		for _, address := range subset.Addresses {
-			if address.TargetRef != nil &&
-				address.TargetRef.Name == pod.Name &&
-				address.TargetRef.UID == pod.UID {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func readyEndpointCountForFailover(endpoints *corev1.Endpoints) int {
-	count := 0
-	for _, subset := range endpoints.Subsets {
-		count += len(subset.Addresses)
-	}
-	return count
 }
 
 // createSwitchoverJob creates a switchover job to do switchover.

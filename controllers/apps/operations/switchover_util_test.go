@@ -50,7 +50,6 @@ func TestValidateAutoFailover(t *testing.T) {
 		clusterName   = "mongodb"
 		componentName = "mongodb"
 		oldPrimary    = "mongodb-0"
-		serviceName   = "mongodb-mongodb"
 	)
 	oldPrimaryUID := types.UID("old-primary-uid")
 	notReadySince := metav1.NewTime(time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC))
@@ -78,11 +77,10 @@ func TestValidateAutoFailover(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				CreationTimestamp: metav1.Now(),
 				Annotations: map[string]string{
-					AutoFailoverAnnotation:               AutoFailoverAnnotationValue,
-					AutoFailoverOldPrimaryPodAnnotation:  oldPrimary,
-					AutoFailoverOldPrimaryUIDAnnotation:  string(oldPrimaryUID),
-					AutoFailoverNotReadySinceAnnotation:  notReadySince.Format(time.RFC3339Nano),
-					AutoFailoverPrimaryServiceAnnotation: serviceName,
+					AutoFailoverAnnotation:              AutoFailoverAnnotationValue,
+					AutoFailoverOldPrimaryPodAnnotation: oldPrimary,
+					AutoFailoverOldPrimaryUIDAnnotation: string(oldPrimaryUID),
+					AutoFailoverNotReadySinceAnnotation: notReadySince.Format(time.RFC3339Nano),
 				},
 			},
 			Spec: appsv1alpha1.OpsRequestSpec{
@@ -92,7 +90,6 @@ func TestValidateAutoFailover(t *testing.T) {
 	}
 	validate := func(
 		t *testing.T,
-		readyEndpointPod *corev1.Pod,
 		opsRequest *appsv1alpha1.OpsRequest,
 		pods ...*corev1.Pod,
 	) (bool, *corev1.Pod, error) {
@@ -101,26 +98,10 @@ func TestValidateAutoFailover(t *testing.T) {
 		if err := corev1.AddToScheme(scheme); err != nil {
 			t.Fatal(err)
 		}
-		objects := make([]client.Object, 0, len(pods)+1)
+		objects := make([]client.Object, 0, len(pods))
 		for _, pod := range pods {
 			objects = append(objects, pod)
 		}
-		endpoints := &corev1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: serviceName},
-		}
-		if readyEndpointPod != nil {
-			endpoints.Subsets = []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{
-					TargetRef: &corev1.ObjectReference{
-						Kind:      "Pod",
-						Namespace: readyEndpointPod.Namespace,
-						Name:      readyEndpointPod.Name,
-						UID:       readyEndpointPod.UID,
-					},
-				}},
-			}}
-		}
-		objects = append(objects, endpoints)
 		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 		cluster := &appsv1alpha1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: clusterName},
@@ -150,7 +131,7 @@ func TestValidateAutoFailover(t *testing.T) {
 	t.Run("current primary remains eligible", func(t *testing.T) {
 		pod := newPod(oldPrimary, oldPrimaryUID)
 		pod.Labels[constant.RoleLabelKey] = "primary"
-		needed, primary, err := validate(t, nil, newOpsRequest(), pod)
+		needed, primary, err := validate(t, newOpsRequest(), pod)
 		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -161,7 +142,7 @@ func TestValidateAutoFailover(t *testing.T) {
 		pod.Labels[constant.RoleLabelKey] = "primary"
 		pod.Status.Conditions[0].Status = corev1.ConditionUnknown
 		pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now())
-		needed, primary, err := validate(t, nil, newOpsRequest(), pod)
+		needed, primary, err := validate(t, newOpsRequest(), pod)
 		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -170,7 +151,7 @@ func TestValidateAutoFailover(t *testing.T) {
 	t.Run("last known primary remains eligible after local role clear", func(t *testing.T) {
 		pod := newPod(oldPrimary, oldPrimaryUID)
 		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
-		needed, primary, err := validate(t, nil, newOpsRequest(), pod)
+		needed, primary, err := validate(t, newOpsRequest(), pod)
 		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -181,43 +162,19 @@ func TestValidateAutoFailover(t *testing.T) {
 		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
 		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
 		newPrimary.Labels[constant.RoleLabelKey] = "primary"
-		needed, primary, err := validate(t, nil, newOpsRequest(), oldPod, newPrimary)
+		needed, primary, err := validate(t, newOpsRequest(), oldPod, newPrimary)
 		if err == nil || needed || primary != nil {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
 	})
 
-	t.Run("new ready primary waits until service routing converges", func(t *testing.T) {
+	t.Run("new ready primary skips the old stepdown", func(t *testing.T) {
 		oldPod := newPod(oldPrimary, oldPrimaryUID)
 		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
 		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
 		newPrimary.Labels[constant.RoleLabelKey] = "primary"
 		newPrimary.Status.Conditions[0].Status = corev1.ConditionTrue
-		needed, primary, err := validate(t, nil, newOpsRequest(), oldPod, newPrimary)
-		if err == nil || needed || primary != nil {
-			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
-		}
-	})
-
-	t.Run("new ready primary ignores a stale endpoint for another pod", func(t *testing.T) {
-		oldPod := newPod(oldPrimary, oldPrimaryUID)
-		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
-		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
-		newPrimary.Labels[constant.RoleLabelKey] = "primary"
-		newPrimary.Status.Conditions[0].Status = corev1.ConditionTrue
-		needed, primary, err := validate(t, oldPod, newOpsRequest(), oldPod, newPrimary)
-		if err == nil || needed || primary != nil {
-			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
-		}
-	})
-
-	t.Run("new ready primary behind service skips the old stepdown", func(t *testing.T) {
-		oldPod := newPod(oldPrimary, oldPrimaryUID)
-		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
-		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
-		newPrimary.Labels[constant.RoleLabelKey] = "primary"
-		newPrimary.Status.Conditions[0].Status = corev1.ConditionTrue
-		needed, primary, err := validate(t, newPrimary, newOpsRequest(), oldPod, newPrimary)
+		needed, primary, err := validate(t, newOpsRequest(), oldPod, newPrimary)
 		if err != nil || needed || primary != nil {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -228,7 +185,7 @@ func TestValidateAutoFailover(t *testing.T) {
 		first.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
 		second := newPod("mongodb-1", types.UID("second-uid"))
 		second.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
-		needed, primary, err := validate(t, nil, newOpsRequest(), first, second)
+		needed, primary, err := validate(t, newOpsRequest(), first, second)
 		if err == nil || needed || primary != nil {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -241,7 +198,7 @@ func TestValidateAutoFailover(t *testing.T) {
 		pod := newPod(oldPrimary, oldPrimaryUID)
 		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
 		pod.Status.Phase = corev1.PodFailed
-		needed, primary, err := validate(t, nil, newOpsRequest(), pod)
+		needed, primary, err := validate(t, newOpsRequest(), pod)
 		if err == nil || needed || primary != nil {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}
@@ -255,7 +212,7 @@ func TestValidateAutoFailover(t *testing.T) {
 		pod := newPod(oldPrimary, oldPrimaryUID)
 		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
 		pod.Status.Phase = corev1.PodFailed
-		needed, primary, err := validate(t, nil, opsRequest, pod)
+		needed, primary, err := validate(t, opsRequest, pod)
 		if err == nil || needed || primary != nil {
 			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
 		}

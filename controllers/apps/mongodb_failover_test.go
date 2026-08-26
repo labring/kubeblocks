@@ -27,21 +27,84 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 )
 
-func TestReadyEndpointCount(t *testing.T) {
-	endpoints := &corev1.Endpoints{
-		Subsets: []corev1.EndpointSubset{
-			{
-				Addresses:         []corev1.EndpointAddress{{IP: "10.0.0.1"}},
-				NotReadyAddresses: []corev1.EndpointAddress{{IP: "10.0.0.2"}},
+func TestHasReadyRolePod(t *testing.T) {
+	pod := func(role string, ready corev1.ConditionStatus, terminating bool) corev1.Pod {
+		p := corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-" + role},
+			Status: corev1.PodStatus{
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: ready}},
 			},
-			{
-				Addresses: []corev1.EndpointAddress{{IP: "10.0.0.3"}},
+		}
+		if role != "" {
+			p.Labels = map[string]string{constant.RoleLabelKey: role}
+		}
+		if terminating {
+			now := metav1.Now()
+			p.DeletionTimestamp = &now
+		}
+		return p
+	}
+	tests := []struct {
+		name string
+		pods []corev1.Pod
+		want bool
+	}{
+		{
+			name: "healthy primary still serves traffic",
+			pods: []corev1.Pod{pod("primary", corev1.ConditionTrue, false)},
+			want: true,
+		},
+		{
+			name: "not ready primary serves nothing",
+			pods: []corev1.Pod{pod("primary", corev1.ConditionFalse, false)},
+			want: false,
+		},
+		{
+			name: "unknown after node loss serves nothing",
+			pods: []corev1.Pod{pod("primary", corev1.ConditionUnknown, false)},
+			want: false,
+		},
+		{
+			name: "ready secondaries do not count",
+			pods: []corev1.Pod{
+				pod("primary", corev1.ConditionFalse, false),
+				pod("secondary", corev1.ConditionTrue, false),
 			},
+			want: false,
+		},
+		{
+			name: "terminating primary is already out of the endpoints",
+			pods: []corev1.Pod{pod("primary", corev1.ConditionTrue, true)},
+			want: false,
+		},
+		{
+			name: "a replacement primary keeps the service up",
+			pods: []corev1.Pod{
+				pod("primary", corev1.ConditionFalse, false),
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "pod-new",
+						Labels: map[string]string{constant.RoleLabelKey: "PRIMARY"},
+					},
+					Status: corev1.PodStatus{
+						Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "no role label at all",
+			pods: []corev1.Pod{pod("", corev1.ConditionTrue, false)},
+			want: false,
 		},
 	}
-
-	if got := readyEndpointCount(endpoints); got != 2 {
-		t.Fatalf("readyEndpointCount() = %d, want 2", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasReadyRolePod(tt.pods, "primary"); got != tt.want {
+				t.Fatalf("hasReadyRolePod() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -65,27 +128,6 @@ func TestAutoFailoverPrimaryNotReady(t *testing.T) {
 				t.Fatalf("autoFailoverPrimaryNotReady() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPrimaryServiceName(t *testing.T) {
-	synthesized := &component.SynthesizedComponent{
-		ClusterName: "demo",
-		Name:        "mongodb",
-		ComponentServices: []appsv1alpha1.ComponentService{
-			{
-				Service: appsv1alpha1.Service{
-					Name:         "default",
-					ServiceName:  "mongodb",
-					RoleSelector: "primary",
-				},
-			},
-		},
-	}
-
-	want := constant.GenerateComponentServiceName("demo", "mongodb", "mongodb")
-	if got := primaryServiceName(synthesized, "PRIMARY"); got != want {
-		t.Fatalf("primaryServiceName() = %q, want %q", got, want)
 	}
 }
 

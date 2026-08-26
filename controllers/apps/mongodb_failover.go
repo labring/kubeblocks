@@ -30,7 +30,6 @@ import (
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/controllers/apps/operations"
 	"github.com/apecloud/kubeblocks/pkg/constant"
-	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/multicluster"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
@@ -48,8 +47,8 @@ const (
 )
 
 // reconcileMongoDBAutoFailover creates a wildcard switchover request when the
-// primary has been unavailable long enough and its primary service has no
-// ready endpoints. The existing switchover implementation remains responsible
+// primary has been unavailable long enough and no pod is left serving the
+// writable role. The existing switchover implementation remains responsible
 // for safe step-down or MongoDB's native majority election.
 func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 	ctx context.Context,
@@ -122,21 +121,12 @@ func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 		return remaining, false, nil
 	}
 
-	serviceName := primaryServiceName(transCtx.SynthesizeComponent, targetRole)
-	if serviceName == "" {
-		return 0, false, nil
-	}
-	endpoints := &corev1.Endpoints{}
-	if err = transCtx.Client.Get(transCtx.Context, types.NamespacedName{
-		Namespace: transCtx.Component.Namespace,
-		Name:      serviceName,
-	}, endpoints, multicluster.InDataContext()); err != nil {
-		if apierrors.IsNotFound(err) {
-			return 0, false, nil
-		}
-		return 0, false, err
-	}
-	if readyEndpointCount(endpoints) != 0 {
+	// The primary service selects on the role label and only publishes ready
+	// pods, so a ready pod holding the role means traffic is still served.
+	// Deriving that from the pods already listed here avoids depending on the
+	// service name, which differs between the generated ComponentDefinition
+	// and the services an old-API cluster actually owns.
+	if hasReadyRolePod(podList.Items, targetRole) {
 		return 0, false, nil
 	}
 
@@ -201,13 +191,12 @@ func (r *ComponentReconciler) reconcileMongoDBAutoFailover(
 				constant.OpsRequestTypeLabelKey: string(appsv1alpha1.SwitchoverType),
 			},
 			Annotations: map[string]string{
-				operations.AutoFailoverAnnotation:               operations.AutoFailoverAnnotationValue,
-				operations.AutoFailoverEpochAnnotation:          epoch,
-				operations.AutoFailoverAttemptAnnotation:        strconv.Itoa(attempt),
-				operations.AutoFailoverOldPrimaryPodAnnotation:  primaryPod.Name,
-				operations.AutoFailoverOldPrimaryUIDAnnotation:  string(primaryPod.UID),
-				operations.AutoFailoverNotReadySinceAnnotation:  notReadySince.UTC().Format(time.RFC3339Nano),
-				operations.AutoFailoverPrimaryServiceAnnotation: serviceName,
+				operations.AutoFailoverAnnotation:              operations.AutoFailoverAnnotationValue,
+				operations.AutoFailoverEpochAnnotation:         epoch,
+				operations.AutoFailoverAttemptAnnotation:       strconv.Itoa(attempt),
+				operations.AutoFailoverOldPrimaryPodAnnotation: primaryPod.Name,
+				operations.AutoFailoverOldPrimaryUIDAnnotation: string(primaryPod.UID),
+				operations.AutoFailoverNotReadySinceAnnotation: notReadySince.UTC().Format(time.RFC3339Nano),
 			},
 		},
 		Spec: appsv1alpha1.OpsRequestSpec{
@@ -291,39 +280,24 @@ func autoFailoverRetryDelay(failedAttempt int) time.Duration {
 	return delay
 }
 
-func primaryServiceName(synthesizeComp *component.SynthesizedComponent, targetRole string) string {
-	var fallback string
-	for _, service := range synthesizeComp.ComponentServices {
-		if !strings.EqualFold(service.RoleSelector, targetRole) {
+// hasReadyRolePod reports whether any pod still carries the role and is ready,
+// which is exactly what the role-selecting service would publish as an
+// endpoint.
+func hasReadyRolePod(pods []corev1.Pod, targetRole string) bool {
+	for i := range pods {
+		pod := &pods[i]
+		if !strings.EqualFold(pod.Labels[constant.RoleLabelKey], targetRole) {
 			continue
 		}
-		if service.ServiceName == "" {
+		if pod.DeletionTimestamp != nil {
 			continue
 		}
-		if service.Name == "default" {
-			return constant.GenerateComponentServiceName(
-				synthesizeComp.ClusterName,
-				synthesizeComp.Name,
-				service.ServiceName,
-			)
-		}
-		if fallback == "" {
-			fallback = constant.GenerateComponentServiceName(
-				synthesizeComp.ClusterName,
-				synthesizeComp.Name,
-				service.ServiceName,
-			)
+		readyCondition := intctrlutil.GetPodCondition(&pod.Status, corev1.PodReady)
+		if readyCondition != nil && readyCondition.Status == corev1.ConditionTrue {
+			return true
 		}
 	}
-	return fallback
-}
-
-func readyEndpointCount(endpoints *corev1.Endpoints) int {
-	count := 0
-	for _, subset := range endpoints.Subsets {
-		count += len(subset.Addresses)
-	}
-	return count
+	return false
 }
 
 // autoFailoverSuppressed reports whether failing over is pointless rather than

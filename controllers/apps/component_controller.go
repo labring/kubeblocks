@@ -258,7 +258,6 @@ func (r *ComponentReconciler) setupWithManager(mgr ctrl.Manager) error {
 		Owns(&dpv1alpha1.Restore{}).
 		Watches(&appsv1alpha1.OpsRequest{}, handler.EnqueueRequestsFromMapFunc(r.autoFailoverOpsRequestEventHandler)).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
-		Watches(&corev1.Endpoints{}, handler.EnqueueRequestsFromMapFunc(r.endpointEventHandler)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources),
@@ -294,7 +293,6 @@ func (r *ComponentReconciler) setupWithMultiClusterManager(mgr ctrl.Manager, mul
 	eventHandler := handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)
 	multiClusterMgr.Watch(b, &corev1.Service{}, eventHandler).
 		Watch(b, &corev1.Pod{}, eventHandler).
-		Watch(b, &corev1.Endpoints{}, handler.EnqueueRequestsFromMapFunc(r.endpointEventHandler)).
 		Watch(b, &corev1.Secret{}, eventHandler).
 		Watch(b, &corev1.ConfigMap{}, eventHandler).
 		Watch(b, &corev1.PersistentVolumeClaim{}, eventHandler).
@@ -363,24 +361,6 @@ func (r *ComponentReconciler) filterComponentResources(ctx context.Context, obj 
 			},
 		},
 	}
-}
-
-func (r *ComponentReconciler) endpointEventHandler(ctx context.Context, obj client.Object) []reconcile.Request {
-	if requests := r.filterComponentResources(ctx, obj); len(requests) > 0 {
-		return requests
-	}
-	endpoints, ok := obj.(*corev1.Endpoints)
-	if !ok {
-		return nil
-	}
-	service := &corev1.Service{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: endpoints.Namespace,
-		Name:      endpoints.Name,
-	}, service, multicluster.InDataContext()); err != nil {
-		return nil
-	}
-	return r.filterComponentResources(ctx, service)
 }
 
 func (r *ComponentReconciler) autoFailoverOpsRequestEventHandler(_ context.Context, obj client.Object) []reconcile.Request {
