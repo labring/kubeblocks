@@ -24,6 +24,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
@@ -60,6 +62,8 @@ var _ = Describe("Backup Deleter Test", func() {
 		inNS := client.InNamespace(testCtx.DefaultNamespace)
 		testapps.ClearResourcesWithRemoveFinalizerOption(&testCtx, generics.BackupSignature, true, inNS)
 		testapps.ClearResourcesWithRemoveFinalizerOption(&testCtx, generics.JobSignature, true, inNS)
+		testapps.ClearResourcesWithRemoveFinalizerOption(&testCtx, generics.PersistentVolumeClaimSignature, true, inNS)
+		testapps.ClearResourcesWithRemoveFinalizerOption(&testCtx, generics.BackupRepoSignature, true)
 		testapps.ClearResources(&testCtx, generics.VolumeSnapshotSignature, inNS)
 	}
 
@@ -92,19 +96,50 @@ var _ = Describe("Backup Deleter Test", func() {
 		})
 
 		It("should success when backup status path is empty", func() {
-			backup.Status.PersistentVolumeClaimName = backupRepoPVCName
+			By("mock backup repo PVC")
+			backupRepoPVC := testdp.NewFakePVC(&testCtx, backupRepoPVCName)
+			backup.Status.PersistentVolumeClaimName = backupRepoPVC.Name
 			Expect(backup.Status.Path).Should(Equal(""))
 			status, err := deleter.DeleteBackupFiles(backup)
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(status).Should(Equal(DeletionStatusSucceeded))
 		})
 
-		It("should success when PVC does not exist", func() {
+		It("should fail when PVC does not exist", func() {
 			backup.Status.PersistentVolumeClaimName = backupRepoPVCName
 			backup.Status.Path = backupPath
 			status, err := deleter.DeleteBackupFiles(backup)
-			Expect(err).ShouldNot(HaveOccurred())
-			Expect(status).Should(Equal(DeletionStatusSucceeded))
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("NotFound"))
+			Expect(status).Should(Equal(DeletionStatusFailed))
+		})
+
+		It("should fail when backup file path is invalid", func() {
+			By("mock backup repo PVC")
+			backupRepoPVC := testdp.NewFakePVC(&testCtx, backupRepoPVCName)
+			backup.Status.PersistentVolumeClaimName = backupRepoPVC.Name
+			backup.Status.Path = "/backup/other-backup"
+			status, err := deleter.DeleteBackupFiles(backup)
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("invalid"))
+			Expect(status).Should(Equal(DeletionStatusFailed))
+		})
+
+		It("should build a POSIX deletion script that fails closed", func() {
+			script := deleter.buildDeleteBackupFilesScript("/backup/test-backup")
+			Expect(script).To(ContainSubstring("set -e"))
+			Expect(script).To(ContainSubstring("targetPath='/backup/test-backup'"))
+			Expect(script).NotTo(ContainSubstring("function rmdirs"))
+			Expect(script).To(ContainSubstring(`[ "${curr}" = "/" ]`))
+			Expect(script).To(ContainSubstring("still exists after deletion"))
+			Expect(script).To(ContainSubstring("already absent, skip removing"))
+			Expect(script).To(ContainSubstring("datasafed_is_absent"))
+			Expect(script).To(ContainSubstring(`*[Dd]irectory\ not\ found*`))
+			Expect(script).NotTo(ContainSubstring(`*[Nn]ot\ found*`))
+			// kopia emptiness must still fail closed on a real list error
+			Expect(script).To(ContainSubstring(`result=$(datasafed list "/")` + "\n"))
+			Expect(script).NotTo(ContainSubstring(`result=$(datasafed list "/" || true)`))
+			Expect(quoteForPOSIXShell("path/with/'quote")).To(Equal(`'path/with/'"'"'quote'`))
 		})
 
 		It("should create job to delete backup file", func() {
@@ -148,8 +183,25 @@ var _ = Describe("Backup Deleter Test", func() {
 			})).Should(Succeed())
 		})
 
-		It("delete backup with backup repo", func() {
+		It("should fail when backup repo does not exist", func() {
 			backup.Status.BackupRepoName = testdp.BackupRepoName
+			status, err := deleter.DeleteBackupFiles(backup)
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("BackupRepo/" + testdp.BackupRepoName))
+			Expect(status).Should(Equal(DeletionStatusFailed))
+		})
+
+		It("should success when backup repo exists but path is empty", func() {
+			repo := &dpv1alpha1.BackupRepo{
+				ObjectMeta: metav1.ObjectMeta{Name: testdp.BackupRepoName},
+				Spec: dpv1alpha1.BackupRepoSpec{
+					StorageProviderRef: testdp.StorageProviderName,
+					PVReclaimPolicy:    corev1.PersistentVolumeReclaimDelete,
+				},
+			}
+			Expect(testCtx.Cli.Create(testCtx.Ctx, repo)).Should(Succeed())
+			backup.Status.BackupRepoName = testdp.BackupRepoName
+			Expect(backup.Status.Path).Should(Equal(""))
 			status, err := deleter.DeleteBackupFiles(backup)
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(status).Should(Equal(DeletionStatusSucceeded))

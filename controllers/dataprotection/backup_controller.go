@@ -211,6 +211,15 @@ func (r *BackupReconciler) deleteBackupFiles(reqCtx intctrlutil.RequestCtx, back
 		return r.Patch(reqCtx.Ctx, backup, patch)
 	}
 
+	// Releasing the backup without cleaning its files has to stay possible, otherwise an
+	// unreachable repository blocks the deletion forever. Requiring an annotation keeps the
+	// decision recorded on the object, unlike removing the finalizer by hand.
+	if backup.Annotations[dptypes.SkipDeleteBackupFilesAnnotationKey] == trueVal {
+		r.Recorder.Event(backup, corev1.EventTypeWarning, "SkipDeleteBackupFiles",
+			fmt.Sprintf("skip deleting backup files at %q, they may be left in the backup repository", backup.Status.Path))
+		return deleteBackup()
+	}
+
 	deleter := &dpbackup.Deleter{
 		RequestCtx: reqCtx,
 		Client:     r.Client,
@@ -229,14 +238,19 @@ func (r *BackupReconciler) deleteBackupFiles(reqCtx intctrlutil.RequestCtx, back
 	case dpbackup.DeletionStatusSucceeded:
 		return deleteBackup()
 	case dpbackup.DeletionStatusFailed:
-		failureReason := err.Error()
-		if backup.Status.FailureReason == failureReason {
-			return nil
+		failureReason := "failed to delete backup files"
+		if err != nil {
+			failureReason = err.Error()
 		}
-		backupPatch := client.MergeFrom(backup.DeepCopy())
-		backup.Status.FailureReason = failureReason
-		r.Recorder.Event(backup, corev1.EventTypeWarning, "DeleteBackupFilesFailed", failureReason)
-		return r.Status().Patch(reqCtx.Ctx, backup, backupPatch)
+		if backup.Status.FailureReason != failureReason {
+			backupPatch := client.MergeFrom(backup.DeepCopy())
+			backup.Status.FailureReason = failureReason
+			r.Recorder.Event(backup, corev1.EventTypeWarning, "DeleteBackupFilesFailed", failureReason)
+			if patchErr := r.Status().Patch(reqCtx.Ctx, backup, backupPatch); patchErr != nil {
+				return patchErr
+			}
+		}
+		return intctrlutil.NewRequeueError(time.Minute, "retry deleting backup files")
 	case dpbackup.DeletionStatusDeleting,
 		dpbackup.DeletionStatusUnknown:
 		// wait for the deletion job completed
@@ -270,6 +284,9 @@ func (r *BackupReconciler) handleDeletingPhase(reqCtx intctrlutil.RequestCtx, ba
 	}
 
 	if err := r.deleteBackupFiles(reqCtx, backup); err != nil {
+		if re, ok := err.(intctrlutil.RequeueError); ok {
+			return intctrlutil.RequeueAfter(re.RequeueAfter(), reqCtx.Log, re.Reason())
+		}
 		return intctrlutil.RequeueWithError(err, reqCtx.Log, "")
 	}
 	return intctrlutil.Reconciled()

@@ -307,6 +307,22 @@ parameters:
 			return restore
 		}
 
+		createFailedBackup := func() *dpv1alpha1.Backup {
+			obj := &dpv1alpha1.Backup{}
+			obj.GenerateName = "failed-backup-"
+			obj.Namespace = testCtx.DefaultNamespace
+			obj.Labels = map[string]string{
+				dataProtectionBackupRepoKey: repoKey.Name,
+			}
+			obj.Spec.BackupMethod = "test-backup-method"
+			obj.Spec.BackupPolicyName = "default"
+			backup := testapps.CreateK8sResource(&testCtx, obj).(*dpv1alpha1.Backup)
+			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(backup), func(g Gomega, fetched *dpv1alpha1.Backup) {
+				g.Expect(fetched.Status.Phase).Should(Equal(dpv1alpha1.BackupPhaseFailed))
+			})).Should(Succeed())
+			return backup
+		}
+
 		getBackupRepo := func(g Gomega, key types.NamespacedName) *dpv1alpha1.BackupRepo {
 			repo := &dpv1alpha1.BackupRepo{}
 			err := testCtx.Cli.Get(testCtx.Ctx, key, repo)
@@ -1280,6 +1296,31 @@ new-item=new-value
 				pvc := &corev1.PersistentVolumeClaim{}
 				err = testCtx.Cli.Get(testCtx.Ctx, pvcKey, pvc)
 				g.Expect(apierrors.IsNotFound(err)).Should(BeTrue())
+			}).Should(Succeed())
+		})
+
+		It("should block the deletion of the BackupRepo if a failed backup still refers to it", func() {
+			By("creating a failed backup associated with the repo")
+			backup := createFailedBackup()
+
+			By("deleting the BackupRepo")
+			testapps.DeleteObject(&testCtx, repoKey, &dpv1alpha1.BackupRepo{})
+
+			By("checking the BackupRepo deletion is blocked because the failed backup still refers to it")
+			Eventually(func(g Gomega) {
+				repo := &dpv1alpha1.BackupRepo{}
+				err := testCtx.Cli.Get(testCtx.Ctx, repoKey, repo)
+				g.Expect(err).ShouldNot(HaveOccurred())
+				g.Expect(repo.DeletionTimestamp).ShouldNot(BeNil())
+				cond := meta.FindStatusCondition(repo.Status.Conditions, ConditionTypeDerivedObjectsDeleted)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).Should(BeEquivalentTo(corev1.ConditionFalse))
+				g.Expect(cond.Reason).Should(BeEquivalentTo(ReasonHaveAssociatedBackups))
+			}).Should(Succeed())
+
+			By("deleting the failed Backup")
+			Eventually(func(g Gomega) {
+				deleteBackup(g, client.ObjectKeyFromObject(backup))
 			}).Should(Succeed())
 		})
 
