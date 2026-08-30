@@ -106,10 +106,7 @@ func enqueueOpsRequestToClusterAnnotation(ctx context.Context, cli client.Client
 	}
 
 	inQueue := func() bool {
-		if opsRes.OpsRequest.Force() && !opsRes.OpsRequest.Spec.EnqueueOnForce {
-			return false
-		}
-		return existOtherRunningOps(opsRequestSlice, opsRes.OpsRequest.Spec.Type, opsBehaviour)
+		return existOtherQueueBlockingOps(opsRequestSlice, opsRes.OpsRequest, opsRes.OpsRequest.Spec.Type, opsBehaviour)
 	}
 
 	index, opsRecorder := GetOpsRecorderFromSlice(opsRequestSlice, opsRes.OpsRequest.Name)
@@ -136,7 +133,7 @@ func enqueueOpsRequestToClusterAnnotation(ctx context.Context, cli client.Client
 			// the opsRequest is already running.
 			return &opsRecorder, nil
 		}
-		if !opsRes.OpsRequest.Spec.Force && existOtherRunningOps(opsRequestSlice, opsRecorder.Type, opsBehaviour) {
+		if existOtherQueueBlockingOps(opsRequestSlice, opsRes.OpsRequest, opsRecorder.Type, opsBehaviour) {
 			// if exists other running opsRequest, return.
 			return &opsRecorder, nil
 		}
@@ -158,6 +155,35 @@ func existOtherRunningOps(opsRecorderSlice []appsv1alpha1.OpsRecorder, opsType a
 		if !opsRecorderSlice[i].InQueue {
 			return true
 		}
+	}
+	return false
+}
+
+func existOtherQueueBlockingOps(opsRecorderSlice []appsv1alpha1.OpsRecorder, opsRequest *appsv1alpha1.OpsRequest, opsType appsv1alpha1.OpsType, opsBehaviour OpsBehaviour) bool {
+	if opsRequest.Force() && !opsRequest.Spec.EnqueueOnForce {
+		return existPriorForceBlockingOps(opsRecorderSlice, opsRequest.Name, opsType, opsBehaviour)
+	}
+	return existOtherRunningOps(opsRecorderSlice, opsType, opsBehaviour)
+}
+
+func existPriorForceBlockingOps(opsRecorderSlice []appsv1alpha1.OpsRecorder, opsRequestName string, opsType appsv1alpha1.OpsType, opsBehaviour OpsBehaviour) bool {
+	if len(opsBehaviour.ForceBypassOpsTypes) == 0 {
+		return false
+	}
+	for i := range opsRecorderSlice {
+		if opsRecorderSlice[i].Name == opsRequestName {
+			return false
+		}
+		if opsBehaviour.QueueByCluster && opsRecorderSlice[i].QueueBySelf {
+			continue
+		}
+		if opsBehaviour.QueueBySelf && opsRecorderSlice[i].Type != opsType {
+			continue
+		}
+		if slices.Contains(opsBehaviour.ForceBypassOpsTypes, opsRecorderSlice[i].Type) {
+			continue
+		}
+		return true
 	}
 	return false
 }

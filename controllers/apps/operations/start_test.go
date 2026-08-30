@@ -168,9 +168,13 @@ var _ = Describe("Start OpsRequest", func() {
 			runAction(reqCtx, opsRes, appsv1alpha1.OpsCreatingPhase)
 
 			By("create a start opsRequest")
-			createStartOpsRequest(opsRes, defaultCompName)
+			startOps := createStartOpsRequest(opsRes, defaultCompName)
+			opsSlice, err := opsutil.GetOpsRequestSliceFromCluster(opsRes.Cluster)
+			Expect(err).ShouldNot(HaveOccurred())
+			opsSlice = append(opsSlice, appsv1alpha1.OpsRecorder{Name: startOps.Name, Type: appsv1alpha1.StartType})
+			Expect(opsutil.UpdateClusterOpsAnnotations(ctx, k8sClient, opsRes.Cluster, opsSlice)).Should(Succeed())
 			startHandler := StartOpsHandler{}
-			err := startHandler.Action(reqCtx, k8sClient, opsRes)
+			err = startHandler.Action(reqCtx, k8sClient, opsRes)
 			Expect(err).ShouldNot(HaveOccurred())
 
 			By("expect the 'Stop' OpsRequest to be Aborted")
