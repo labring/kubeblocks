@@ -4,8 +4,9 @@ on:
   pull_request_target:
     types: [ edited, opened ]
 
-env:
-  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+permissions:
+  issues: read
+  pull-requests: read
 
 jobs:
   pr-check:
@@ -14,22 +15,73 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: check branch name
-        uses: apecloud-inc/check-branch-name@v0.1.0
         if: github.event.pull_request.head.repo.full_name == github.repository
-        with:
-          branch_pattern: 'feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/'
-          comment_for_invalid_branch_name: 'This branch name is not following the standards: feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/'
-          fail_if_invalid_branch_name: 'true'
-          ignore_branch_pattern: 'main|master'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          branch_pattern='^(feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/)'
+          ignore_branch_pattern='^(main|master)$'
+
+          if [[ "$HEAD_REF" =~ $ignore_branch_pattern ]]; then
+            echo "This branch should be ignored"
+            exit 0
+          fi
+
+          if [[ "$HEAD_REF" =~ $branch_pattern ]]; then
+            echo "This branch has a valid name"
+            exit 0
+          fi
+
+          echo "::error::This branch name is not following the standards: feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/"
+          exit 1
 
       - name: check PR title
         uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/checkout@v4
       - name: check issue link
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          bash ${{ github.workspace }}/.github/utils/issue_link.sh \
-            ${{ github.repository }} \
-            ${{ github.repository_owner }} \
-            ${{ github.event.pull_request.number }} \
-            "${{ github.event.pull_request.title }}"
+          if [[ "$PR_TITLE" == chore* || "$PR_TITLE" == docs* ]]; then
+            echo "PR skip the issue check"
+            exit 0
+          fi
+
+          repo_name="${REPO/${REPO_OWNER}\//}"
+          closing_issues_references="$(
+            gh api graphql \
+              -f owner="$REPO_OWNER" \
+              -f name="$repo_name" \
+              -F number="$PR_NUMBER" \
+              -f query='
+                query($owner: String!, $name: String!, $number: Int!) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      closingIssuesReferences(first: 10) {
+                        edges {
+                          node {
+                            title
+                            number
+                          }
+                        }
+                      }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest.closingIssuesReferences.edges'
+          )"
+
+          echo "Closing Issues References: $closing_issues_references"
+
+          if [[ "$closing_issues_references" == "[]" ]]; then
+            echo "PR has no Issues References"
+            exit 1
+          fi
+
+          echo "PR has Issues References"
