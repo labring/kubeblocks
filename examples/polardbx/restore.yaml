@@ -1,0 +1,28 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Restore
+metadata:
+  name: polardbx-cluster-restore
+spec:
+  backup:
+    name: polardbx-cluster-backup
+    namespace: default
+  readyConfig:
+    jobAction:
+      target:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: polardbx-cluster
+            app.kubernetes.io/managed-by: kubeblocks
+            apps.kubeblocks.io/component-name: cn
+    connectionCredential:
+      secretName: polardbx-cluster-conn-credential
+      usernameKey: username
+      passwordKey: password
+  containerResources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  backoffLimit: 1
