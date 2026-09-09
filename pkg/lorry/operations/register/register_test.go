@@ -6,7 +6,7 @@ This file is part of KubeBlocks project
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+any later version.
 
 This program is distributed in the hope that it will be useful
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -19,18 +19,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 package register
 
-import (
-	"github.com/apecloud/kubeblocks/pkg/lorry/operations"
-	_ "github.com/apecloud/kubeblocks/pkg/lorry/operations/component"
-	_ "github.com/apecloud/kubeblocks/pkg/lorry/operations/replica"
-	_ "github.com/apecloud/kubeblocks/pkg/lorry/operations/user"
-	_ "github.com/apecloud/kubeblocks/pkg/lorry/operations/volume"
-)
+import "testing"
 
-func Register(name string, op operations.Operation) error {
-	return operations.Register(name, op)
-}
-
-func Operations() map[string]operations.Operation {
-	return operations.Operations()
+func TestSQLOperationsAreNotRegistered(t *testing.T) {
+	registered := Operations()
+	for _, name := range []string{"query", "exec"} {
+		if _, ok := registered[name]; ok {
+			t.Fatalf("SQL operation %q must not be exposed by the Lorry HTTP API", name)
+		}
+	}
 }
