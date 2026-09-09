@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package restore
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -125,10 +127,27 @@ func GetRestoreActionsCountForPrepareData(config *dpv1alpha1.PrepareDataConfig) 
 	return count
 }
 
+// RestoreLabelValue returns a stable Kubernetes label value for a Restore name.
+// Restore names can exceed the label value limit because generated restore Job
+// names include the backup name and target component identity.
+func RestoreLabelValue(restoreName string) string {
+	if len(validation.IsValidLabelValue(restoreName)) == 0 {
+		return restoreName
+	}
+	hash := sha256.Sum256([]byte(restoreName))
+	return fmt.Sprintf("restore-%x", hash[:8])
+}
+
 func BuildRestoreLabels(restoreName string) map[string]string {
 	return map[string]string{
 		constant.AppManagedByLabelKey: dptypes.AppName,
-		DataProtectionRestoreLabelKey: restoreName,
+		DataProtectionRestoreLabelKey: RestoreLabelValue(restoreName),
+	}
+}
+
+func BuildRestoreAnnotations(restoreName string) map[string]string {
+	return map[string]string{
+		DataProtectionRestoreNameAnnotationKey: restoreName,
 	}
 }
 
@@ -326,6 +345,19 @@ func GetRestoreFromBackupAnnotation(backup *dpv1alpha1.Backup, compSpecs []appsv
 	connectionPassword := backup.Annotations[dptypes.ConnectionPasswordAnnotationKey]
 	if connectionPassword != "" {
 		restoreInfoMap[constant.ConnectionPassword] = connectionPassword
+	}
+	if encryptedAccounts := backup.Annotations[constant.EncryptedSystemAccountsAnnotationKey]; encryptedAccounts != "" {
+		accountsByComponent := map[string]map[string]string{}
+		if err := json.Unmarshal([]byte(encryptedAccounts), &accountsByComponent); err != nil {
+			return "", fmt.Errorf("invalid encrypted system accounts annotation on backup %s: %w", backup.Name, err)
+		}
+		if componentAccounts, ok := accountsByComponent[componentName]; ok {
+			componentAccountsJSON, err := json.Marshal(componentAccounts)
+			if err != nil {
+				return "", err
+			}
+			restoreInfoMap[constant.EncryptedSystemAccounts] = string(componentAccountsJSON)
+		}
 	}
 	restoreForClusterMap := map[string]map[string]string{}
 	restoreForClusterMap[componentName] = restoreInfoMap

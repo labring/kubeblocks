@@ -1,0 +1,32 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Restore
+metadata:
+  name: polardb-mongo-kb08-restore-v2-from-backup
+  namespace: polardb-kb08-e2e
+spec:
+  backup:
+    name: polardb-mongo-kb08-backup-v2
+    namespace: polardb-kb08-e2e
+  readyConfig:
+    jobAction:
+      target:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: polardb-mongo-kb08-restore-v2
+            app.kubernetes.io/managed-by: kubeblocks
+            apps.kubeblocks.io/component-name: documentdb
+    connectionCredential:
+      secretName: polardb-mongo-kb08-restore-v2-documentdb-account-ferretdb
+      usernameKey: username
+      passwordKey: password
+  env:
+    - name: MONGO_TARGET_CLUSTER
+      value: polardb-mongo-kb08-restore-v2
+  containerResources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  backoffLimit: 1

@@ -1,0 +1,84 @@
+{{- $componentDef := include "polardbPostgresql.componentDefinitionName" . -}}
+{{- $spiloImage := include "postgresql.image.major12.minor150" . -}}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "rejoin" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPostgresql.componentDefinitionName" . }}: {{ include "polardbPostgresql.componentDefinitionName" . }}
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $componentDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+  jobSpec:
+    backoffLimit: 0
+    activeDeadlineSeconds: 1200
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: patroni-rejoin
+            image: {{ $spiloImage }}
+            imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+            env:
+              - name: PATRONI_OPERATION
+                value: restart
+              - name: WAIT_SECONDS
+                value: "900"
+            command: [/bin/bash, -ec]
+            args:
+              - |
+                {{- .Files.Get "scripts/patroni-ops.sh" | nindent 16 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "rebuild" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPostgresql.componentDefinitionName" . }}: {{ include "polardbPostgresql.componentDefinitionName" . }}
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $componentDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE, CONFIRM_REBUILD]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+        CONFIRM_REBUILD:
+          type: string
+          enum: ["true"]
+  jobSpec:
+    backoffLimit: 0
+    activeDeadlineSeconds: 1200
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: patroni-rebuild
+            image: {{ $spiloImage }}
+            imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+            env:
+              - name: PATRONI_OPERATION
+                value: reinitialize
+              - name: WAIT_SECONDS
+                value: "900"
+            command: [/bin/bash, -ec]
+            args:
+              - |
+                {{- .Files.Get "scripts/patroni-ops.sh" | nindent 16 }}

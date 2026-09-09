@@ -169,8 +169,17 @@ func (r *OpsRequestReconciler) handleOpsRequestByPhase(reqCtx intctrlutil.Reques
 	case appsv1alpha1.OpsRunningPhase, appsv1alpha1.OpsCancellingPhase:
 		return r.reconcileStatusDuringRunningOrCanceling(reqCtx, opsRes)
 	case appsv1alpha1.OpsSucceedPhase:
+		// PatchOpsStatus normally releases the cluster operation queue when an
+		// operation completes. Keep this reconciliation-time fallback for handlers
+		// that persist a terminal status before their queue update is observed.
+		if err := operations.DequeueOpsRequestInClusterAnnotation(reqCtx.Ctx, r.Client, opsRes); err != nil {
+			return intctrlutil.ResultToP(intctrlutil.CheckedRequeueWithError(err, reqCtx.Log, ""))
+		}
 		return r.handleSucceedOpsRequest(reqCtx, opsRes.OpsRequest)
 	case appsv1alpha1.OpsFailedPhase, appsv1alpha1.OpsCancelledPhase:
+		if err := operations.DequeueOpsRequestInClusterAnnotation(reqCtx.Ctx, r.Client, opsRes); err != nil {
+			return intctrlutil.ResultToP(intctrlutil.CheckedRequeueWithError(err, reqCtx.Log, ""))
+		}
 		return intctrlutil.ResultToP(intctrlutil.Reconciled())
 	}
 	return intctrlutil.ResultToP(intctrlutil.Reconciled())

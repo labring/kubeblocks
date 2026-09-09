@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  generateName: polardb-mongo-kb08-hscale-ferretdb-
+  namespace: polardb-kb08-e2e
+spec:
+  clusterRef: polardb-mongo-kb08
+  type: HorizontalScaling
+  horizontalScaling:
+    - componentName: ferretdb
+      replicas: 2

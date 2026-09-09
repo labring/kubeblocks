@@ -1,0 +1,26 @@
+# API-contract test only. The endpoint is intentionally unreachable so the
+# fencing Op must fail before it can write an audit annotation or claim safety.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: polardb-pg-stonith
+  namespace: polardb-stack-contract-test
+type: Opaque
+stringData:
+  endpoint: http://127.0.0.1:1/fence
+  token: contract-test-token
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-contract-fence-reject
+  namespace: polardb-stack-contract-test
+spec:
+  clusterRef: polardb-stack-contract-test
+  type: Custom
+  customSpec:
+    componentName: control
+    opsDefinitionRef: polardb-pg-stack-fence
+    params:
+      - TARGET_INSTANCE: ro-1
+        FENCE_REASON: contract test endpoint rejection

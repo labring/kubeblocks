@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/graph"
 )
 
@@ -43,7 +44,7 @@ func (t *componentValidationTransformer) Transform(ctx graph.TransformContext, d
 	if err = validateEnabledLogs(comp, transCtx.CompDef); err != nil {
 		return newRequeueError(requeueDuration, err.Error())
 	}
-	if err = validateCompReplicas(comp, transCtx.CompDef); err != nil {
+	if err = validateCompReplicas(comp, transCtx.CompDef, transCtx.Cluster); err != nil {
 		return newRequeueError(requeueDuration, err.Error())
 	}
 	return nil
@@ -77,11 +78,20 @@ func validateEnabledLogConfigs(compDef *appsv1alpha1.ComponentDefinition, enable
 	return invalidLogNames
 }
 
-func validateCompReplicas(comp *appsv1alpha1.Component, compDef *appsv1alpha1.ComponentDefinition) error {
+func validateCompReplicas(comp *appsv1alpha1.Component, compDef *appsv1alpha1.ComponentDefinition,
+	cluster *appsv1alpha1.Cluster) error {
 	if compDef.Spec.ReplicasLimit == nil {
 		return nil
 	}
 	replicas := comp.Spec.Replicas
+	// Stop records the original component replica count on the Cluster before
+	// reducing every component to zero. Keep the normal lower bound for regular
+	// horizontal scaling, but allow that explicit lifecycle transition to finish.
+	if replicas == 0 && cluster != nil {
+		if _, stopping := cluster.Annotations[constant.SnapShotForStartAnnotationKey]; stopping {
+			return nil
+		}
+	}
 	replicasLimit := compDef.Spec.ReplicasLimit
 	if replicas >= replicasLimit.MinReplicas && replicas <= replicasLimit.MaxReplicas {
 		return nil

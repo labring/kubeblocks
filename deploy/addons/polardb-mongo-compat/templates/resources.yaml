@@ -1,0 +1,314 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: {{ .Values.componentDefinitions.documentdb }}
+  labels:
+    {{- include "polardbMongoCompat.labels" . | nindent 4 }}
+spec:
+  provider: kubeblocks.io
+  description: PostgreSQL DocumentDB backend for the MongoDB-compatible FerretDB frontend on KubeBlocks 0.8.
+  serviceKind: documentdb
+  serviceVersion: "17.0.0"
+  replicasLimit:
+    minReplicas: 1
+    maxReplicas: 1
+  systemAccounts:
+    - name: ferretdb
+      initAccount: true
+      passwordGenerationPolicy:
+        length: 16
+        numDigits: 8
+        numSymbols: 0
+        letterCase: MixedCases
+  vars:
+    - name: POSTGRES_USER
+      valueFrom:
+        credentialVarRef:
+          name: ferretdb
+          optional: false
+          username: Required
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          name: ferretdb
+          optional: false
+          password: Required
+  volumes:
+    - name: data
+      needSnapshot: true
+  services:
+    - name: default
+      # In KubeBlocks 0.8, serviceVarRef resolves the Service name from the
+      # logical service name. Keep the generated suffix explicit so the
+      # FerretDB component can resolve this service during provisioning.
+      serviceName: default
+      spec:
+        ports:
+          - name: postgres
+            port: 5432
+            targetPort: postgres
+  runtime:
+    containers:
+      - name: postgres
+        image: {{ .Values.images.documentdb }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        ports:
+          - containerPort: 5432
+            name: postgres
+        env:
+          - name: POSTGRES_USER
+            value: $(POSTGRES_USER)
+          - name: POSTGRES_PASSWORD
+            value: $(POSTGRES_PASSWORD)
+          - name: POSTGRES_DB
+            value: postgres
+          - name: PGDATA
+            value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          tcpSocket:
+            port: postgres
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          tcpSocket:
+            port: postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: {{ .Values.componentDefinitions.ferretdb }}
+  labels:
+    {{- include "polardbMongoCompat.labels" . | nindent 4 }}
+spec:
+  provider: kubeblocks.io
+  description: FerretDB frontend exposing a MongoDB-compatible API backed by PostgreSQL DocumentDB.
+  serviceKind: mongodb
+  serviceVersion: "5.0.0"
+  replicasLimit:
+    minReplicas: 1
+    maxReplicas: 16
+  vars:
+    - name: BACKEND_HOST
+      valueFrom:
+        serviceVarRef:
+          compDef: {{ .Values.componentDefinitions.documentdb }}
+          name: default
+          optional: false
+          host: Required
+    - name: BACKEND_PORT
+      valueFrom:
+        serviceVarRef:
+          compDef: {{ .Values.componentDefinitions.documentdb }}
+          name: default
+          optional: false
+          port:
+            name: postgres
+            option: Required
+    - name: FERRETDB_BACKEND_USER
+      valueFrom:
+        credentialVarRef:
+          compDef: {{ .Values.componentDefinitions.documentdb }}
+          name: ferretdb
+          optional: false
+          username: Required
+    - name: FERRETDB_BACKEND_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          compDef: {{ .Values.componentDefinitions.documentdb }}
+          name: ferretdb
+          optional: false
+          password: Required
+  services:
+    - name: default
+      spec:
+        ports:
+          - name: mongodb
+            port: 27017
+            targetPort: mongodb
+  runtime:
+    containers:
+      - name: ferretdb
+        image: {{ .Values.images.ferretdb }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        ports:
+          - containerPort: 27017
+            name: mongodb
+        env:
+          - name: FERRETDB_POSTGRESQL_URL
+            value: postgres://$(FERRETDB_BACKEND_USER):$(FERRETDB_BACKEND_PASSWORD)@$(BACKEND_HOST):$(BACKEND_PORT)/postgres?sslmode=disable
+          - name: FERRETDB_LISTEN_ADDR
+            value: 0.0.0.0:27017
+          - name: FERRETDB_TELEMETRY
+            value: disable
+        readinessProbe:
+          tcpSocket:
+            port: mongodb
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          tcpSocket:
+            port: mongodb
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+---
+# KubeBlocks 0.8 selects BackupPolicyTemplates through ClusterDefinition labels.
+# Runtime components remain ComponentDefinition based; this definition is only a
+# stable compatibility anchor for that 0.8 selection mechanism.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: {{ .Values.clusterDefinition.name }}
+  labels:
+    {{- include "polardbMongoCompat.labels" . | nindent 4 }}
+spec:
+  type: polardb-mongo-compat
+  componentDefs:
+    - name: documentdb
+      workloadType: Stateful
+    - name: ferretdb
+      # KubeBlocks 0.8 renders direct ComponentDefinitions through an RSM and
+      # StatefulSet by default. This records the controller workload type;
+      # FerretDB itself remains a stateless MongoDB-compatible frontend.
+      workloadType: Stateful
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: {{ include "polardbMongoCompat.resourceName" (dict "suffix" "mongodump" "Release" .Release) }}
+  labels:
+    {{- include "polardbMongoCompat.labels" . | nindent 4 }}
+spec:
+  backupType: Full
+  backup:
+    backupData:
+      image: {{ .Values.images.mongoTools }}
+      runOnTargetPodNode: false
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+      command:
+        - bash
+        - -c
+        - |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          handle_exit() {
+            local exit_code=$?
+            if [ "${exit_code}" -ne 0 ]; then
+              touch "${DP_BACKUP_INFO_FILE}.exit"
+            fi
+            exit "${exit_code}"
+          }
+          trap handle_exit EXIT
+
+          export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}"
+          export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+
+          target_cluster="${MONGO_TARGET_CLUSTER:-${DP_DB_HOST%%-documentdb-*}}"
+          if [ -z "${target_cluster}" ] || [ "${target_cluster}" = "${DP_DB_HOST}" ]; then
+            echo "MONGO_TARGET_CLUSTER is required when DP_DB_HOST does not name a documentdb Pod" >&2
+            exit 1
+          fi
+          # Backup and restore Jobs run in the Backup CR namespace, so the
+          # service's short name is sufficient and does not rely on 0.9-only
+          # KB_CLUSTER_NAME/KB_NAMESPACE environment variables.
+          mongo_host="${target_cluster}-ferretdb"
+          mongo_user="${DP_DB_USER:-${POSTGRES_USER:-}}"
+          mongo_password="${DP_DB_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+          if [ -z "${mongo_user}" ] || [ -z "${mongo_password}" ]; then
+            echo "MongoDB-compatible backup credentials are not available" >&2
+            exit 1
+          fi
+          mongo_uri="mongodb://${mongo_user}:${mongo_password}@${mongo_host}:27017/?authMechanism=SCRAM-SHA-256&authSource=postgres"
+          start_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          mongodump --quiet --uri "${mongo_uri}" --archive --gzip \
+            | datasafed push - "${DP_BACKUP_NAME}.archive.gz"
+
+          stop_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          total_size=$(datasafed stat / | awk '/TotalSize/ {print $2; exit}')
+          total_size=${total_size:-0}
+          printf '{"totalSize":"%s","timeRange":{"start":"%s","end":"%s"}}\n' \
+            "${total_size}" "${start_time}" "${stop_time}" > "${DP_BACKUP_INFO_FILE}"
+  restore:
+    postReady:
+      - job:
+          image: {{ .Values.images.mongoTools }}
+          runOnTargetPodNode: false
+          command:
+            - bash
+            - -c
+            - |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              target_cluster="${MONGO_TARGET_CLUSTER:-}"
+              if [ -z "${target_cluster}" ]; then
+                target_cluster="${DP_DB_HOST%%-documentdb-*}"
+              fi
+              if [ -z "${target_cluster}" ] || [ "${target_cluster}" = "${DP_DB_HOST}" ]; then
+                echo "MONGO_TARGET_CLUSTER is required when DP_DB_HOST does not name a documentdb Pod" >&2
+                exit 1
+              fi
+
+              mongo_host="${target_cluster}-ferretdb"
+              mongo_user="${DP_DB_USER:-${POSTGRES_USER:-}}"
+              mongo_password="${DP_DB_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+              if [ -z "${mongo_user}" ] || [ -z "${mongo_password}" ]; then
+                echo "MongoDB-compatible restore credentials are not available" >&2
+                exit 1
+              fi
+              mongo_uri="mongodb://${mongo_user}:${mongo_password}@${mongo_host}:27017/?authMechanism=SCRAM-SHA-256&authSource=postgres"
+              for attempt in $(seq 1 60); do
+                if mongosh "${mongo_uri}" --quiet --eval 'if (db.runCommand({ping: 1}).ok !== 1) { quit(1); }' >/dev/null; then
+                  break
+                fi
+                if [ "${attempt}" -eq 60 ]; then
+                  echo "MongoDB-compatible endpoint ${mongo_host}:27017 is not ready" >&2
+                  exit 1
+                fi
+                sleep 2
+              done
+
+              backup_file="/backupdata${DP_BACKUP_BASE_PATH}/${DP_BACKUP_NAME}.archive.gz"
+              test -s "${backup_file}"
+              mongorestore --quiet --uri "${mongo_uri}" --gzip --archive="${backup_file}" --drop
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: {{ include "polardbMongoCompat.resourceName" (dict "suffix" "backup-policy" "Release" .Release) }}
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+  labels:
+    clusterdefinition.kubeblocks.io/name: {{ .Values.clusterDefinition.name }}
+    {{- include "polardbMongoCompat.labels" . | nindent 4 }}
+spec:
+  clusterDefinitionRef: {{ .Values.clusterDefinition.name }}
+  backupPolicies:
+    - componentDefs:
+        - {{ .Values.componentDefinitions.documentdb }}
+      target:
+        account: ferretdb
+        role: ""
+        strategy: Any
+      backupMethods:
+        - name: mongodump
+          actionSetName: {{ include "polardbMongoCompat.resourceName" (dict "suffix" "mongodump" "Release" .Release) }}
+          snapshotVolumes: false
+          runtimeSettings:
+            resources:
+              {{- toYaml .Values.backup.resources | nindent 14 }}
+      schedules:
+        - backupMethod: mongodump
+          cronExpression: {{ .Values.backup.schedule.cronExpression | quote }}
+          enabled: {{ .Values.backup.schedule.enabled }}
+          retentionPeriod: {{ .Values.backup.schedule.retentionPeriod | quote }}

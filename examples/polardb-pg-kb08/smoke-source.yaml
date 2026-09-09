@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: polardb-pg-kb08-smoke-source-v2
+  namespace: polardb-kb08-e2e
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: docker.io/postgres:17
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-kb08-polardb-account-postgres
+                  key: password
+          command:
+            - bash
+            - -ec
+            - |
+              host=polardb-pg-kb08-polardb-postgresql
+              until pg_isready -h "${host}" -U postgres -d postgres; do sleep 2; done
+              mode=`psql -h "${host}" -U postgres -d postgres -Atqc 'SHOW polar_deploy_mode'`
+              test "${mode}" = OPEN_SOURCE
+              psql -v ON_ERROR_STOP=1 -h "${host}" -U postgres -d postgres <<'SQL'
+              DROP TABLE IF EXISTS kb08_restore_check;
+              CREATE TABLE kb08_restore_check (id integer PRIMARY KEY, payload text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+              INSERT INTO kb08_restore_check (id, payload) VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma');
+              UPDATE kb08_restore_check SET payload = 'beta-updated' WHERE id = 2;
+              DELETE FROM kb08_restore_check WHERE id = 3;
+              CREATE INDEX kb08_restore_check_payload_idx ON kb08_restore_check (payload);
+              SELECT current_setting('polar_deploy_mode') AS polar_deploy_mode, count(*) AS row_count, string_agg(payload, ',' ORDER BY id) AS payloads FROM kb08_restore_check;
+              SQL

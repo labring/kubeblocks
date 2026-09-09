@@ -1,0 +1,16 @@
+# API-contract test only. The fixture gives ro-1 an invalid RW role while
+# rw-0 remains leader. The bridge must reject a non-RO target before it can
+# write switchRw.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-contract-switchover-reject
+  namespace: polardb-stack-contract-test
+spec:
+  clusterRef: polardb-stack-contract-test
+  type: Custom
+  customSpec:
+    componentName: control
+    opsDefinitionRef: polardb-pg-stack-switchover
+    params:
+      - TARGET_INSTANCE: ro-1

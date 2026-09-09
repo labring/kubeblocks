@@ -101,6 +101,22 @@ func (p *Plan) Execute() error {
 	return p.dag.WalkReverseTopoOrder(p.walkFunc, nil)
 }
 
+// NeedsMemberUpdateRequeue reports whether an OnDelete member update still
+// needs another reconciliation pass. Pod watch events can be coalesced while a
+// StatefulSet replaces a member, so relying on a single event can leave a
+// serial update between revisions indefinitely.
+func (p *Plan) NeedsMemberUpdateRequeue() bool {
+	rsm := p.transCtx.rsm
+	if rsm == nil || rsm.Spec.MemberUpdateStrategy == nil ||
+		rsm.Spec.RsmTransformPolicy == workloads.ToPod || rsm.Status.UpdateRevision == "" {
+		return false
+	}
+	// OnDelete StatefulSets can retain CurrentRevision after every Pod has been
+	// recreated. UpdatedReplicas is the convergence signal maintained by the
+	// StatefulSet controller for this update mode.
+	return rsm.Status.UpdatedReplicas != rsm.Status.Replicas
+}
+
 // Do the real works
 
 func (b *PlanBuilder) rsmWalkFunc(v graph.Vertex) error {

@@ -1,0 +1,8 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  generateName: polardb-mongo-kb08-start-
+  namespace: polardb-kb08-e2e
+spec:
+  clusterRef: polardb-mongo-kb08
+  type: Start

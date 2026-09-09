@@ -1,0 +1,17 @@
+# API-contract test only. This object is deliberately not managed by the
+# PolarDB Stack Operator and must never be used as a database deployment.
+apiVersion: mpd.polardb.aliyun.com/v1
+kind: MPDCluster
+metadata:
+  name: polardb-stack-contract-test
+  namespace: polardb-stack-contract-test
+spec:
+  operatorName: contract-test
+  dbClusterType: share
+  followerNum: 1
+  classInfo:
+    className: contract-test
+  classInfoModifyTo:
+    className: ""
+  versionCfg:
+    versionName: contract-test

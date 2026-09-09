@@ -1,0 +1,25 @@
+componentDefinitions:
+  documentdb: polardb-mongo-docdb
+  ferretdb: polardb-mongo-ferret
+
+clusterDefinition:
+  name: polardb-mongo-compat-kb08
+
+images:
+  documentdb: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+  ferretdb: ghcr.io/ferretdb/ferretdb:2.7.0
+  mongoTools: docker.io/mongo:7.0
+  pullPolicy: IfNotPresent
+
+backup:
+  schedule:
+    enabled: false
+    cronExpression: "0 18 * * *"
+    retentionPeriod: 7d
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

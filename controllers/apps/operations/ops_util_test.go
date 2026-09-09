@@ -66,6 +66,26 @@ var _ = Describe("OpsUtil functions", func() {
 	AfterEach(cleanEnv)
 
 	Context("Test ops_util functions", func() {
+		It("resolves a direct ComponentDefinition component by logical name", func() {
+			clusterDef := &appsv1alpha1.ClusterDefinition{
+				Spec: appsv1alpha1.ClusterDefinitionSpec{
+					ComponentDefs: []appsv1alpha1.ClusterComponentDefinition{
+						{Name: "documentdb", WorkloadType: appsv1alpha1.Stateful},
+						{Name: "ferretdb", WorkloadType: appsv1alpha1.Stateless},
+					},
+				},
+			}
+			component := &appsv1alpha1.ClusterComponentSpec{
+				Name:            "ferretdb",
+				ComponentDefRef: "polardb-mongo-ferret",
+			}
+
+			componentDef := getOpsClusterComponentDef(clusterDef, component)
+			Expect(componentDef).ToNot(BeNil())
+			Expect(componentDef.Name).To(Equal("ferretdb"))
+			Expect(componentDef.WorkloadType).To(Equal(appsv1alpha1.Stateless))
+		})
+
 		It("Test ops_util functions", func() {
 			By("init operations resources ")
 			opsRes, _, _ := initOperationsResources(clusterDefinitionName, clusterVersionName, clusterName)

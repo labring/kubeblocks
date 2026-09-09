@@ -1,0 +1,40 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "basebackup" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPostgresql.componentDefinitionName" . }}: {{ include "polardbPostgresql.componentDefinitionName" . }}
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  backupType: Full
+  env:
+    - name: DATA_DIR
+      value: {{ .Values.dataMountPath }}/pgroot/data
+    - name: POSTGRESQL_IMAGE
+      value: {{ include "postgresql.image.major12.minor150" . }}
+  backup:
+    preBackup: []
+    postBackup: []
+    backupData:
+      image: $(POSTGRESQL_IMAGE)
+      runOnTargetPodNode: false
+      command:
+      - bash
+      - -c
+      - |
+        {{- .Files.Get "dataprotection/backup-info-collector.sh" | nindent 8 }}
+        {{- .Files.Get "dataprotection/pg-basebackup-backup.sh" | nindent 8 }}
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+  restore:
+    prepareData:
+      image: $(POSTGRESQL_IMAGE)
+      command:
+      - bash
+      - -c
+      - |
+        {{- .Files.Get "dataprotection/pg-basebackup-restore.sh" | nindent 8 }}
+    postReady: []

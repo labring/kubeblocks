@@ -1,0 +1,36 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: {{ include "polardbPgStackOps.controlComponentDefinitionName" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPgStackOps.controlComponentDefinitionName" . }}: {{ include "polardbPgStackOps.controlComponentDefinitionName" . }}
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  provider: polardb-stack
+  description: Zero-replica KubeBlocks 0.8 control projection for an official PolarDB Stack MPDCluster. Stack owns the database workloads, storage, services and Cluster Manager.
+  serviceKind: polardb-pg-stack
+  serviceVersion: {{ .Values.controlComponentDefinition.serviceVersion | quote }}
+  replicasLimit:
+    minReplicas: 0
+    maxReplicas: 0
+  runtime:
+    containers:
+      - name: control
+        image: {{ include "polardbPgStackOps.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+---
+# Direct ComponentDefinition clusters in KB 0.8 use this definition as a
+# logical compatibility anchor. It does not represent the external MPDCluster.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: {{ .Values.clusterDefinition.name }}
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  type: polardb-pg-stack
+  componentDefs:
+    - name: control
+      workloadType: Stateful

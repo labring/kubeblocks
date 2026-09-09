@@ -139,7 +139,7 @@ func reconcileActionWithComponentOps(reqCtx intctrlutil.RequestCtx,
 		expectCount, completedCount, err := handleStatusProgress(reqCtx, cli, opsRes, progressResource{
 			opsMessageKey:       opsMessageKey,
 			clusterComponent:    clusterComponent,
-			clusterComponentDef: clusterDef.GetComponentDefByName(clusterComponent.ComponentDefRef),
+			clusterComponentDef: getOpsClusterComponentDef(clusterDef, clusterComponent),
 			opsIsCompleted:      opsIsCompleted,
 		}, &compStatus)
 		if err != nil {
@@ -207,6 +207,21 @@ func getClusterDefByName(ctx context.Context, cli client.Client, clusterDefName 
 		return nil, err
 	}
 	return clusterDef, nil
+}
+
+// getOpsClusterComponentDef resolves both legacy ClusterDefinition components and
+// KB 0.8 direct ComponentDefinition components. The latter keep the runtime
+// definition in Cluster.spec.componentSpecs[*].componentDef while the
+// ClusterDefinition retains the logical component name used for operation state.
+func getOpsClusterComponentDef(clusterDef *appsv1alpha1.ClusterDefinition,
+	clusterComponent *appsv1alpha1.ClusterComponentSpec) *appsv1alpha1.ClusterComponentDefinition {
+	if clusterDef == nil || clusterComponent == nil {
+		return nil
+	}
+	if componentDef := clusterDef.GetComponentDefByName(clusterComponent.ComponentDefRef); componentDef != nil {
+		return componentDef
+	}
+	return clusterDef.GetComponentDefByName(clusterComponent.Name)
 }
 
 // PatchOpsStatusWithOpsDeepCopy patches OpsRequest.status with the deepCopy opsRequest.

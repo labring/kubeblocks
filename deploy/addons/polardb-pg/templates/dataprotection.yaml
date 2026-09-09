@@ -1,0 +1,159 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: {{ .Values.clusterDefinition.name }}
+  labels:
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+  type: polardb-pg
+  componentDefs:
+    - name: polardb
+      workloadType: Stateful
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: {{ include "polardbPg.resourceName" (dict "suffix" "basebackup" "Values" .Values) }}
+  labels:
+    {{ include "polardbPg.componentDefinitionName" . }}: {{ include "polardbPg.componentDefinitionName" . }}
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+  backupType: Full
+  env:
+    - name: POLARDB_PG_IMAGE
+      value: {{ include "polardbPg.image" . }}
+    - name: PG_BIN
+      value: /u01/polardb_pg/bin
+    - name: DATA_DIR
+      value: {{ .Values.dataMountPath }}
+  backup:
+    backupData:
+      image: $(POLARDB_PG_IMAGE)
+      runOnTargetPodNode: false
+      command:
+        - /bin/bash
+        - -c
+        - |
+          get_current_time() {
+            "${PG_BIN}/psql" -U "${DP_DB_USER}" -h "${DP_DB_HOST}" -p "${DP_DB_PORT:-5432}" -d postgres -Atqc \
+              "SELECT now() AT TIME ZONE 'UTC'"
+          }
+
+          stat_and_save_backup_info() {
+            export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}"
+            export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+            local start_time="$1"
+            local stop_time="${2:-}"
+            if [[ -z "${stop_time}" ]]; then
+              stop_time="$(get_current_time)"
+            fi
+            start_time="$(date -d "${start_time}" -u '+%Y-%m-%dT%H:%M:%SZ')"
+            stop_time="$(date -d "${stop_time}" -u '+%Y-%m-%dT%H:%M:%SZ')"
+            local total_size
+            total_size="$(datasafed stat / | awk '/TotalSize/ { print $2 }')"
+            printf '{"totalSize":"%s","timeRange":{"start":"%s","end":"%s"}}\n' \
+              "${total_size}" "${start_time}" "${stop_time}" >"${DP_BACKUP_INFO_FILE}"
+          }
+
+          handle_exit() {
+            local exit_code=$?
+            if [[ ${exit_code} -ne 0 ]]; then
+              echo "PolarDB-PG base backup failed with exit code ${exit_code}" >&2
+              touch "${DP_BACKUP_INFO_FILE}.exit"
+            fi
+            exit "${exit_code}"
+          }
+
+          set -euo pipefail
+          export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}:${PG_BIN}"
+          export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+          export PGPASSWORD="${DP_DB_PASSWORD}"
+          if [[ ! -x "${PG_BIN}/pg_basebackup" || ! -x "${PG_BIN}/psql" ]]; then
+            echo "the pinned runtime does not expose the expected PolarDB-PG client binaries at ${PG_BIN}" >&2
+            exit 1
+          fi
+          if [[ "$("${PG_BIN}/psql" -U "${DP_DB_USER}" -h "${DP_DB_HOST}" -p "${DP_DB_PORT:-5432}" -d postgres -Atqc 'SHOW polar_deploy_mode;')" != "OPEN_SOURCE" ]]; then
+            echo "refusing to use this action set against a non-PolarDB-PG endpoint" >&2
+            exit 1
+          fi
+          backup_dir="$(mktemp -d)"
+          cleanup_backup_dir() {
+            local exit_code=$?
+            rm -rf "${backup_dir}"
+            return "${exit_code}"
+          }
+          trap 'cleanup_backup_dir; handle_exit' EXIT
+          start_time="$(get_current_time)"
+          "${PG_BIN}/pg_basebackup" \
+            -D "${backup_dir}/primary_datadir" \
+            --polardata="${backup_dir}/shared_datadir" \
+            -Pv -c fast -X stream \
+            -h "${DP_DB_HOST}" -p "${DP_DB_PORT:-5432}" -U "${DP_DB_USER}" \
+            && tar -C "${backup_dir}" -cpf - primary_datadir shared_datadir \
+            | datasafed push -z zstd-fastest - "/${DP_BACKUP_NAME}.tar.zst"
+          stat_and_save_backup_info "${start_time}"
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+  restore:
+    prepareData:
+      image: $(POLARDB_PG_IMAGE)
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}:${PG_BIN}"
+          export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+          data_root="${DATA_DIR:?DATA_DIR must be set}"
+          data_dir="${data_root}/primary_datadir"
+          shared_dir="${data_root}/shared_datadir"
+          archive="/${DP_BACKUP_NAME:?DP_BACKUP_NAME must be set}.tar.zst"
+          if [[ ! -x "${PG_BIN}/pg_ctl" ]]; then
+            echo "the pinned runtime does not expose pg_ctl at ${PG_BIN}" >&2
+            exit 1
+          fi
+          rm -rf "${data_dir}" "${shared_dir}" "${data_root}/replica_datadir"*
+          mkdir -p "${data_root}"
+          datasafed pull -d zstd-fastest "${archive}" - | tar -xpf - -C "${data_root}"
+          chown -R postgres:postgres "${data_dir}" "${shared_dir}"
+          test -s "${data_dir}/PG_VERSION"
+          test -s "${data_dir}/postgresql.conf"
+          test -s "${shared_dir}/global/pg_control"
+          grep -Eq '^[[:space:]]*polar_datadir[[:space:]]*=' "${data_dir}/postgresql.conf"
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: {{ include "polardbPg.resourceName" (dict "suffix" "backup-policy" "Values" .Values) }}
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+  labels:
+    clusterdefinition.kubeblocks.io/name: {{ .Values.clusterDefinition.name }}
+    {{ include "polardbPg.componentDefinitionName" . }}: {{ include "polardbPg.componentDefinitionName" . }}
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+  clusterDefinitionRef: {{ .Values.clusterDefinition.name }}
+  backupPolicies:
+    - componentDefs:
+        - {{ include "polardbPg.componentDefinitionName" . }}
+      target:
+        account: postgres
+        role: ""
+        strategy: Any
+      backupMethods:
+        - name: polar-pg-basebackup
+          actionSetName: {{ include "polardbPg.resourceName" (dict "suffix" "basebackup" "Values" .Values) }}
+          snapshotVolumes: false
+          targetVolumes:
+            volumeMounts:
+              - name: data
+                mountPath: {{ .Values.dataMountPath }}
+          runtimeSettings:
+            resources:
+              {{- toYaml .Values.backup.resources | nindent 14 }}
+      schedules:
+        - backupMethod: polar-pg-basebackup
+          cronExpression: {{ .Values.backup.schedule.cronExpression | quote }}
+          enabled: {{ .Values.backup.schedule.enabled }}
+          retentionPeriod: {{ .Values.backup.schedule.retentionPeriod | quote }}

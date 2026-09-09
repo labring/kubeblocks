@@ -27,6 +27,7 @@ const (
 	PostgreSQL         EngineType = "postgresql"
 	OfficialPostgreSQL EngineType = "official-postgresql"
 	ApecloudPostgreSQL EngineType = "apecloud-postgresql"
+	PolarDBPostgreSQL  EngineType = "polardb-postgresql"
 	Redis              EngineType = "redis"
 	ETCD               EngineType = "etcd"
 	MongoDB            EngineType = "mongodb"

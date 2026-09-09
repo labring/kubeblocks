@@ -121,6 +121,53 @@ var _ = Describe("Lorry Utils", func() {
 			Expect(len(container.Ports)).Should(Equal(2))
 		})
 
+		It("disables Lorry HA by default for the Patroni PostgreSQL addon", func() {
+			handler := appsv1alpha1.PostgresqlBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbe{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{BuiltinHandler: &handler},
+				},
+			}
+			component.Labels = map[string]string{patroniManagedLabelKey: "true"}
+			component.PodSpec.Containers = []corev1.Container{{Name: "postgresql"}}
+
+			buildLorryServiceContainer(component, container, lorryHTTPPort, lorryGRPCPort, nil)
+			var enableHA *corev1.EnvVar
+			for i := range container.Env {
+				if container.Env[i].Name == constant.KBEnvEnableHA {
+					enableHA = &container.Env[i]
+					break
+				}
+			}
+			Expect(enableHA).ShouldNot(BeNil())
+			Expect(enableHA.Value).Should(Equal("false"))
+		})
+
+		It("preserves an explicit Lorry HA setting for the Patroni PostgreSQL addon", func() {
+			handler := appsv1alpha1.PostgresqlBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbe{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{BuiltinHandler: &handler},
+				},
+			}
+			component.Labels = map[string]string{patroniManagedLabelKey: "true"}
+			component.PodSpec.Containers = []corev1.Container{{
+				Name: "postgresql",
+				Env:  []corev1.EnvVar{{Name: constant.KBEnvEnableHA, Value: "true"}},
+			}}
+
+			buildLorryServiceContainer(component, container, lorryHTTPPort, lorryGRPCPort, nil)
+			var enableHA *corev1.EnvVar
+			for i := range container.Env {
+				if container.Env[i].Name == constant.KBEnvEnableHA {
+					enableHA = &container.Env[i]
+					break
+				}
+			}
+			Expect(enableHA).ShouldNot(BeNil())
+			Expect(enableHA.Value).Should(Equal("true"))
+		})
+
 		It("build lorry container if any builtinhandler specified", func() {
 			reqCtx := intctrlutil.RequestCtx{
 				Ctx: ctx,

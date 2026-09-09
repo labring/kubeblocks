@@ -604,8 +604,16 @@ func PatchBackupObjectMeta(
 		if err := setClusterSnapshotAnnotation(request.Backup, cluster); err != nil {
 			return false, err
 		}
-		if err := setConnectionPasswordAnnotation(request); err != nil {
-			return false, err
+		target := request.BackupPolicy.Spec.Target
+		if target != nil && target.ConnectionCredential != nil &&
+			target.ConnectionCredential.SecretName == constant.GenerateDefaultConnCredential(cluster.Name) {
+			if err := setConnectionPasswordAnnotation(request); err != nil {
+				return false, err
+			}
+		} else {
+			if err := setEncryptedSystemAccountsAnnotation(request, cluster); err != nil {
+				return false, err
+			}
 		}
 		request.Labels[dptypes.ClusterUIDLabelKey] = string(cluster.UID)
 	}
@@ -686,6 +694,51 @@ func setConnectionPasswordAnnotation(request *dpbackup.Request) error {
 	if ciphertext != "" {
 		request.Backup.Annotations[dptypes.ConnectionPasswordAnnotationKey] = ciphertext
 	}
+	return nil
+}
+
+// setEncryptedSystemAccountsAnnotation records ComponentDefinition system
+// account passwords for physical restore. Passwords are encrypted before they
+// are persisted on the Backup object.
+func setEncryptedSystemAccountsAnnotation(request *dpbackup.Request, cluster *appsv1alpha1.Cluster) error {
+	objectList, err := listObjectsOfCluster(request.Ctx, request.Client, cluster, &corev1.SecretList{})
+	if err != nil {
+		return err
+	}
+	secretList := objectList.(*corev1.SecretList)
+	accountsByComponent := map[string]map[string]string{}
+	for i := range secretList.Items {
+		secret := &secretList.Items[i]
+		username := secret.Data[constant.AccountNameForSecret]
+		password := secret.Data[constant.AccountPasswdForSecret]
+		if len(username) == 0 || len(password) == 0 {
+			continue
+		}
+		componentName := secret.Labels[constant.KBAppComponentLabelKey]
+		if componentName == "" {
+			continue
+		}
+		encryptor := intctrlutil.NewEncryptor(viper.GetString(constant.CfgKeyDPEncryptionKey))
+		ciphertext, err := encryptor.Encrypt(password)
+		if err != nil {
+			return err
+		}
+		if accountsByComponent[componentName] == nil {
+			accountsByComponent[componentName] = map[string]string{}
+		}
+		accountsByComponent[componentName][string(username)] = ciphertext
+	}
+	if len(accountsByComponent) == 0 {
+		return nil
+	}
+	accountsJSON, err := json.Marshal(accountsByComponent)
+	if err != nil {
+		return err
+	}
+	if request.Backup.Annotations == nil {
+		request.Backup.Annotations = map[string]string{}
+	}
+	request.Backup.Annotations[constant.EncryptedSystemAccountsAnnotationKey] = string(accountsJSON)
 	return nil
 }
 

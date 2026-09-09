@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-ha-smoke-read
+  namespace: polardb-pg-ha-kb08
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: docker.io/postgres:17
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-ha-postgresql-account-postgres
+                  key: password
+          command: [bash, -ec]
+          args:
+            - |
+              host=pg-ha-postgresql-postgresql
+              until pg_isready -h "${host}" -U postgres -d postgres; do sleep 2; done
+              test "$(psql -h "${host}" -U postgres -d postgres -Atqc 'SELECT pg_is_in_recovery()')" = f
+              result="$(psql -h "${host}" -U postgres -d postgres -Atqc "SELECT count(*) || ':' || string_agg(payload, ',' ORDER BY id) FROM patroni_ha_check")"
+              test "${result}" = "2:before-switchover,persistent-row"
+              printf 'primary data=%s\n' "${result}"

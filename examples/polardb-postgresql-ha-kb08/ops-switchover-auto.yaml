@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: pg-ha-switchover-auto
+  namespace: polardb-pg-ha-kb08
+spec:
+  clusterRef: pg-ha
+  type: Switchover
+  switchover:
+    - componentName: postgresql
+      instanceName: "*"

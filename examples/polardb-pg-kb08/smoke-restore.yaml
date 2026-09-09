@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: polardb-pg-kb08-smoke-restore-v4
+  namespace: polardb-kb08-e2e
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: docker.io/postgres:17
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-kb08-restore-v3-polardb-account-postgres
+                  key: password
+          command:
+            - bash
+            - -ec
+            - |
+              host=polardb-pg-kb08-restore-v3-polardb-postgresql
+              until pg_isready -h "${host}" -U postgres -d postgres; do sleep 2; done
+              mode=`psql -h "${host}" -U postgres -d postgres -Atqc 'SHOW polar_deploy_mode'`
+              row_count=`psql -h "${host}" -U postgres -d postgres -Atqc 'SELECT count(*) FROM kb08_restore_check'`
+              payloads=`psql -h "${host}" -U postgres -d postgres -Atqc "SELECT string_agg(payload, ',' ORDER BY id) FROM kb08_restore_check"`
+              index_found=`psql -h "${host}" -U postgres -d postgres -Atqc "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'kb08_restore_check_payload_idx')"`
+              test "${mode}" = OPEN_SOURCE
+              test "${row_count}" = 2
+              test "${payloads}" = alpha,beta-updated
+              test "${index_found}" = t
+              psql -v ON_ERROR_STOP=1 -h "${host}" -U postgres -d postgres -c "SELECT count(*) AS row_count, string_agg(payload, ',' ORDER BY id) AS payloads FROM kb08_restore_check"

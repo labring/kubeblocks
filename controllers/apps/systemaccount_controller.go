@@ -167,6 +167,15 @@ func (r *SystemAccountReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		reqCtx.Log.V(1).Info("Cluster is in compact mode, no need to create accounts related secrets", "cluster", req.NamespacedName)
 		return intctrlutil.Reconciled()
 	}
+	// SystemAccountReconciler provisions legacy ClusterDefinition accounts and
+	// requires a ClusterVersion for its executor configuration. Direct
+	// ComponentDefinition clusters provision their own account Secrets through
+	// componentAccountTransformer, so invoking this legacy controller would only
+	// requeue on an empty ClusterVersion reference.
+	if cluster.Spec.ClusterVersionRef == "" {
+		reqCtx.Log.V(1).Info("Cluster uses ComponentDefinition accounts; skipping legacy system account reconciliation", "cluster", req.NamespacedName)
+		return intctrlutil.Reconciled()
+	}
 
 	clusterdefinition := &appsv1alpha1.ClusterDefinition{}
 	clusterDefNS := types.NamespacedName{Name: cluster.Spec.ClusterDefRef}

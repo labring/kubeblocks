@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: polardb-mongo-kb08-smoke-read-
+  namespace: polardb-kb08-e2e
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mongosh
+          image: docker.io/mongo:7.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-mongo-kb08-documentdb-account-ferretdb
+                  key: username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-mongo-kb08-documentdb-account-ferretdb
+                  key: password
+          command:
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+              uri="mongodb://${MONGO_USER}:${MONGO_PASSWORD}@polardb-mongo-kb08-ferretdb:27017/kbcompat?authMechanism=SCRAM-SHA-256&authSource=postgres"
+              mongosh "${uri}" --quiet --eval '
+                function check(condition, message) { if (!condition) { throw new Error(message); } }
+                const found = db.matrix.find({type: "alpha"}).sort({qty: -1}).toArray();
+                const agg = db.matrix.aggregate([{$match: {type: "alpha"}}, {$group: {_id: "$type", total: {$sum: "$qty"}, maxScore: {$max: "$nested.score"}}}]).toArray();
+                check(db.matrix.countDocuments({}) === 2, "document count");
+                check(found.length === 2 && found[0].qty === 7 && found[1].qty === 6, "sorted rows");
+                check(agg.length === 1 && agg[0].total === 13 && agg[0].maxScore === 15, "aggregation");
+                check(db.matrix.getIndexes().some(index => index.name === "type_qty"), "index");
+                check(db.runCommand({ping: 1}).ok === 1, "ping");
+                print(JSON.stringify({count: db.matrix.countDocuments({}), found, agg}));
+              '

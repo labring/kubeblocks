@@ -1,0 +1,17 @@
+annotations:
+  addon.kubeblocks.io/kubeblocks-version: '>=0.8.0 <0.9.0'
+  addon.kubeblocks.io/model: RDBMS
+  addon.kubeblocks.io/provider: community
+apiVersion: v2
+appVersion: 12.15.0
+description: Patroni-based PostgreSQL HA addon for KubeBlocks 0.8; this is not the PolarDB-PG shared-storage engine.
+home: https://kubeblocks.io/
+icon: https://kubeblocks.io/img/logo.png
+maintainers:
+- name: wallyxjh
+  url: https://github.com/wallyxjh/kubeblocks/
+name: polardb-postgresql
+sources:
+- https://github.com/wallyxjh/kubeblocks/
+type: application
+version: 0.8.2

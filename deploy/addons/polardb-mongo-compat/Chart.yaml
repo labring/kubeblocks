@@ -1,0 +1,14 @@
+apiVersion: v2
+name: polardb-mongo-compat
+description: MongoDB-compatible API addon backed by PostgreSQL DocumentDB and FerretDB for KubeBlocks 0.8
+type: application
+version: 0.8.0
+appVersion: "2.7.0"
+home: https://github.com/FerretDB/FerretDB
+sources:
+  - https://github.com/FerretDB/FerretDB
+  - https://github.com/FerretDB/documentdb
+annotations:
+  addon.kubeblocks.io/kubeblocks-version: ">=0.8.0 <0.9.0"
+  addon.kubeblocks.io/model: document
+  addon.kubeblocks.io/provider: community

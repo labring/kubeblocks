@@ -22,8 +22,11 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/exp/slices"
 
 	"github.com/apecloud/kubeblocks/pkg/lorry/engines/models"
@@ -59,7 +62,8 @@ const (
 	FROM pg_user
 	WHERE usename = '%s';
 	`
-	createUserTpl         = "CREATE USER %s WITH PASSWORD '%s';"
+	createUserTpl         = "CREATE USER %s WITH PASSWORD %s;"
+	alterUserPasswordTpl  = "ALTER USER %s WITH PASSWORD %s;"
 	dropUserTpl           = "DROP USER IF EXISTS %s;"
 	grantTpl              = "GRANT %s TO %s;"
 	revokeTpl             = "REVOKE %s FROM %s;"
@@ -123,15 +127,32 @@ func (mgr *Manager) DescribeUser(ctx context.Context, userName string) (*models.
 }
 
 func (mgr *Manager) CreateUser(ctx context.Context, userName, password string) error {
-	sql := fmt.Sprintf(createUserTpl, userName, password)
+	sql := fmt.Sprintf(createUserTpl, quoteIdentifier(userName), quoteLiteral(password))
 
 	_, err := mgr.Exec(ctx, sql)
+	if err != nil && strings.HasPrefix(userName, "kb") && isDuplicateRoleError(err) {
+		sql = fmt.Sprintf(alterUserPasswordTpl, quoteIdentifier(userName), quoteLiteral(password))
+		_, err = mgr.Exec(ctx, sql)
+	}
 	if err != nil {
 		mgr.Logger.Error(err, "execute sql failed", "sql", sql)
 		return err
 	}
 
 	return nil
+}
+
+func isDuplicateRoleError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42710"
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func quoteLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }
 
 func (mgr *Manager) DeleteUser(ctx context.Context, userName string) error {
