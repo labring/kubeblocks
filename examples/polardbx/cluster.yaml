@@ -57,14 +57,6 @@ spec:
       requests:
         cpu: 500m
         memory: 1Gi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 5Gi
   - name: cdc
     componentDefRef: cdc
     replicas: 1
@@ -75,11 +67,3 @@ spec:
       requests:
         cpu: 500m
         memory: 1Gi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 5Gi

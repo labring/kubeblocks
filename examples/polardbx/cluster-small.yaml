@@ -60,14 +60,6 @@ spec:
       requests:
         cpu: 50m
         memory: 256Mi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 2Gi
   - name: cdc
     componentDefRef: cdc
     disableExporter: true
@@ -79,11 +71,3 @@ spec:
       requests:
         cpu: 100m
         memory: 512Mi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 2Gi
