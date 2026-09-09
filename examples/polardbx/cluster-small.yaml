@@ -13,7 +13,6 @@ spec:
   componentSpecs:
   - name: gms
     componentDefRef: gms
-    disableExporter: true
     replicas: 1
     resources:
       limits:
@@ -32,7 +31,6 @@ spec:
             storage: 2Gi
   - name: dn
     componentDefRef: dn
-    disableExporter: true
     replicas: 1
     resources:
       limits:
@@ -51,7 +49,6 @@ spec:
             storage: 2Gi
   - name: cn
     componentDefRef: cn
-    disableExporter: true
     replicas: 1
     resources:
       limits:
@@ -60,17 +57,8 @@ spec:
       requests:
         cpu: 50m
         memory: 256Mi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 2Gi
   - name: cdc
     componentDefRef: cdc
-    disableExporter: true
     replicas: 0
     resources:
       limits:
@@ -79,11 +67,3 @@ spec:
       requests:
         cpu: 100m
         memory: 512Mi
-    volumeClaimTemplates:
-    - name: data
-      spec:
-        accessModes:
-        - ReadWriteOnce
-        resources:
-          requests:
-            storage: 2Gi

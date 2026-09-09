@@ -1,0 +1,17 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardbx-cluster-volume-expansion
+  namespace: default
+spec:
+  clusterRef: polardbx-cluster
+  type: VolumeExpansion
+  volumeExpansion:
+  - componentName: gms
+    volumeClaimTemplates:
+    - name: data
+      storage: 6Gi
+  - componentName: dn
+    volumeClaimTemplates:
+    - name: data
+      storage: 6Gi
