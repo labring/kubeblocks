@@ -4,9 +4,13 @@ on:
   pull_request_target:
     types: [ edited, opened ]
 
+permissions:
+  contents: none
+  issues: write
+  pull-requests: write
+
 env:
-  GITHUB_TOKEN: ${{ secrets.KUBEBLOCKS_TOKEN }}
-  REVIEWERS: 'realzyy,fireworm2002'
+  REVIEWERS: 'wallyxjh,zijiren233'
   REPO: 'kubeblocks'
   ISINTERACTION: ''
 
@@ -14,9 +18,11 @@ jobs:
   get-issue-label:
     name: GET PR Issue Label
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
       - name: get issue link
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh api graphql -f query='
             query($org: String!,$repo: String!,$number: Int!){
@@ -42,7 +48,7 @@ jobs:
         uses: actions-cool/issues-helper@v3
         with:
           actions: 'add-labels'
-          token: ${{ secrets.KUBEBLOCKS_TOKEN }}
+          token: ${{ github.token }}
           issue-number: ${{ github.event.pull_request.number }}
           labels: 'area/user-interaction'
 
@@ -51,4 +57,4 @@ jobs:
         if: ${{ env.ISINTERACTION != null }}
         with:
           reviewers: ${{ env.REVIEWERS }}
-          token: ${{ secrets.KUBEBLOCKS_TOKEN }}
+          token: ${{ github.token }}

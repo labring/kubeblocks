@@ -4,18 +4,23 @@ on:
   pull_request_target:
     types: [ edited, opened ]
 
-env:
-  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
 
 jobs:
   pr-check:
     name: PR Pre-Check
     if: ${{ !(startsWith(github.head_ref, 'releasing-') && startsWith(github.base_ref, 'release-')) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: check branch name
         uses: apecloud-inc/check-branch-name@v0.1.0
         if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           branch_pattern: 'feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/'
           comment_for_invalid_branch_name: 'This branch name is not following the standards: feature/|bugfix/|release/|hotfix/|support/|releasing/|dependabot/'
@@ -24,9 +29,16 @@ jobs:
 
       - name: check PR title
         uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
       - name: check issue link
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash ${{ github.workspace }}/.github/utils/issue_link.sh \
             ${{ github.repository }} \
