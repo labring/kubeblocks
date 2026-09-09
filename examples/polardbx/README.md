@@ -52,7 +52,28 @@ kubectl apply -f examples/polardbx/cluster.yaml
 kubectl wait --for=condition=Ready cluster/polardbx-cluster --timeout=30m
 ```
 
-For a memory-constrained KubeBlocks 0.9 environment, use `examples/polardbx/cluster-small.yaml` instead of `cluster.yaml`.
+For a memory-constrained environment, use `examples/polardbx/cluster-small.yaml` instead of `cluster.yaml`.
+
+## Volume Expansion
+
+Only the GMS and DN components mount the `data` PVC. CN and CDC do not need a `data` PVC and must not be included in a volume expansion request.
+
+The StorageClass used by the GMS and DN `data` PVCs must allow expansion:
+
+```bash
+kubectl get storageclass -o custom-columns=NAME:.metadata.name,ALLOW_VOLUME_EXPANSION:.allowVolumeExpansion
+```
+
+For a cluster created from `cluster.yaml`, expand the GMS and DN data volumes from 5Gi to 6Gi:
+
+```bash
+kubectl apply -f examples/polardbx/volumeexpand.yaml
+kubectl wait --for=jsonpath='{.status.phase}'=Succeed \
+  opsrequest/polardbx-cluster-volume-expansion --timeout=30m
+kubectl get pvc -l app.kubernetes.io/instance=polardbx-cluster
+```
+
+For a cluster created from `cluster-small.yaml`, use `examples/polardbx/volumeexpand-small.yaml` to expand the same volumes from 2Gi to 3Gi. For another target capacity, update both GMS and DN `storage` requests to a value larger than their current size.
 
 Create test data through the CN endpoint:
 
