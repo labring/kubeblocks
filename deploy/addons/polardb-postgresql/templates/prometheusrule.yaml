@@ -1,0 +1,83 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "rules" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  groups:
+  - name: {{ include "polardbPostgresql.componentDefinitionName" . }}
+    rules:
+    - alert: PolarDBPostgreSQLNoPrimary
+      expr: |
+        (
+          count by (namespace, app_kubernetes_io_instance) (
+            pg_replication_is_master{app_kubernetes_io_name="{{ include "polardbPostgresql.componentDefinitionName" . }}"} == 1
+          ) != 1
+        ) or absent(pg_replication_is_master{app_kubernetes_io_name="{{ include "polardbPostgresql.componentDefinitionName" . }}"})
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: PolarDB PostgreSQL cluster does not have exactly one primary
+        description: PolarDB PostgreSQL cluster {{ "{{ $labels.app_kubernetes_io_instance }}" }} has {{ "{{ $value }}" }} primaries.
+    - alert: PolarDBPostgreSQLReplicationLag
+      expr: |
+        max by (namespace, app_kubernetes_io_instance, pod) (
+          max_over_time(pg_replication_lag{app_kubernetes_io_name="{{ include "polardbPostgresql.componentDefinitionName" . }}"}[2m])
+        ) > {{ .Values.prometheusRule.replicationLagSeconds }}
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: PolarDB PostgreSQL replication lag is high
+        description: Pod {{ "{{ $labels.pod }}" }} replication lag is {{ "{{ $value | printf \"%.2f\" }}" }} seconds.
+    - alert: PolarDBPostgreSQLBackupPolicyUnavailable
+      expr: |
+        kube_customresource_status_phase{
+          customresource_kind="BackupPolicy",
+          component_definition="{{ include "polardbPostgresql.componentDefinitionName" . }}",
+          phase!="Available",
+        } == 1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: PolarDB PostgreSQL backup policy is not available
+        description: BackupPolicy {{ "{{ $labels.name }}" }} is not Available.
+    - alert: PolarDBPostgreSQLBackupFailed
+      expr: |
+        max by (namespace, app_kubernetes_io_instance) (
+          kube_customresource_status_phase{
+            customresource_kind="Backup",
+            phase="Failed",
+          }
+          * on (namespace, backup_policy) group_left(component_definition)
+            kube_customresource_status_phase{
+              customresource_kind="BackupPolicy",
+              component_definition="{{ include "polardbPostgresql.componentDefinitionName" . }}",
+              phase="Available"
+            }
+        ) == 1
+      for: {{ .Values.prometheusRule.backupFailureMinutes }}m
+      labels:
+        severity: critical
+      annotations:
+        summary: PolarDB PostgreSQL backup failed
+        description: PolarDB PostgreSQL cluster {{ "{{ $labels.app_kubernetes_io_instance }}" }} has a failed backup.
+    - alert: PolarDBPostgreSQLRestoreDrillFailed
+      expr: |
+        max by (namespace, job_name) (
+          kube_job_status_failed{job_name=~"polardb-pg-restore-drill-.*"}
+        ) > 0
+      for: {{ .Values.prometheusRule.restoreDrillFailureMinutes }}m
+      labels:
+        severity: critical
+      annotations:
+        summary: PolarDB PostgreSQL restore drill failed
+        description: Restore drill job {{ "{{ $labels.job_name }}" }} failed in namespace {{ "{{ $labels.namespace }}" }}.
+{{- end }}

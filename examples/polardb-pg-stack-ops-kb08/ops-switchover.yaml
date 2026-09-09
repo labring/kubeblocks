@@ -1,0 +1,13 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-switchover
+  namespace: polardb-stack-demo
+spec:
+  clusterRef: polardb-stack-demo
+  type: Custom
+  customSpec:
+    componentName: control
+    opsDefinitionRef: polardb-pg-stack-switchover
+    params:
+      - TARGET_INSTANCE: REPLACE_RO_INSTANCE_ID

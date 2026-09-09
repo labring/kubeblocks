@@ -1,0 +1,14 @@
+apiVersion: v2
+name: polardb-pg
+description: Real PolarDB-PG local-instance addon for KubeBlocks 0.8
+type: application
+version: 0.8.0
+appVersion: 17.11.1
+home: https://github.com/polardb/PolarDB-for-PostgreSQL
+sources:
+  - https://github.com/polardb/PolarDB-for-PostgreSQL
+  - https://github.com/ApsaraDB/polardb-pg-docker-images
+annotations:
+  addon.kubeblocks.io/kubeblocks-version: ">=0.8.0 <0.9.0"
+  addon.kubeblocks.io/model: RDBMS
+  addon.kubeblocks.io/provider: community

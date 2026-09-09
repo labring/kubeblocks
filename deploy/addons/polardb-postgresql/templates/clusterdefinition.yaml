@@ -1,0 +1,13 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: {{ .Values.clusterDefinition.name }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  type: postgresql
+  componentDefs:
+    - name: postgresql
+      workloadType: Stateful

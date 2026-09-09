@@ -216,8 +216,33 @@ func (t *componentAccountProvisionTransformer) provisionAccount(transCtx *compon
 		return nil
 	}
 
+	// Account creation may succeed in Lorry just before a controller status
+	// update is interrupted. Query KB-owned accounts first so that a retry
+	// converges instead of issuing a second CREATE USER request.
+	if strings.HasPrefix(account.Name, "kb") {
+		existingAccounts, err := lorryCli.ListSystemAccounts(transCtx.Context)
+		if err != nil {
+			return err
+		}
+		if systemAccountExists(existingAccounts, account.Name) {
+			return nil
+		}
+	}
+
 	// TODO: re-define the role
 	return lorryCli.CreateUser(transCtx.Context, string(username), string(password), string(lorryModel.SuperUserRole))
+}
+
+func systemAccountExists(accounts []map[string]any, accountName string) bool {
+	for _, account := range accounts {
+		for _, key := range []string{"roleName", "userName"} {
+			name, ok := account[key].(string)
+			if ok && name == accountName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *componentAccountProvisionTransformer) getAccountSecret(ctx graph.TransformContext,

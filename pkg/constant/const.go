@@ -136,6 +136,7 @@ const (
 	ClusterSnapshotAnnotationKey                = "kubeblocks.io/cluster-snapshot"           // ClusterSnapshotAnnotationKey saves the snapshot of cluster.
 	DefaultClusterVersionAnnotationKey          = "kubeblocks.io/is-default-cluster-version" // DefaultClusterVersionAnnotationKey specifies the default cluster version.
 	OpsRequestAnnotationKey                     = "kubeblocks.io/ops-request"                // OpsRequestAnnotationKey OpsRequest annotation key in Cluster
+	EncryptedSystemAccountsAnnotationKey        = "kubeblocks.io/encrypted-system-accounts"  // EncryptedSystemAccountsAnnotationKey saves encrypted system account passwords.
 	ReconcileAnnotationKey                      = "kubeblocks.io/reconcile"                  // ReconcileAnnotationKey Notify k8s object to reconcile
 	RestartAnnotationKey                        = "kubeblocks.io/restart"                    // RestartAnnotationKey the annotation which notices the StatefulSet/DeploySet to restart
 	RestoreFromBackupAnnotationKey              = "kubeblocks.io/restore-from-backup"        // RestoreFromBackupAnnotationKey specifies the component to recover from the backup.
@@ -329,6 +330,7 @@ const (
 	VolumeRestorePolicyKeyForRestore = "volumeRestorePolicy"
 	RestoreTimeKeyForRestore         = "restoreTime"
 	ConnectionPassword               = "connectionPassword"
+	EncryptedSystemAccounts          = "encryptedSystemAccounts"
 )
 
 const (

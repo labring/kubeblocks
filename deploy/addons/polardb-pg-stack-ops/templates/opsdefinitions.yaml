@@ -1,0 +1,191 @@
+{{- $image := include "polardbPgStackOps.image" . -}}
+{{- $compDef := include "polardbPgStackOps.controlComponentDefinitionName" . -}}
+{{- $wait := .Values.ops.timeoutSeconds -}}
+{{- $stonithSecret := required "ops.stonithSecretName is required" .Values.ops.stonithSecretName -}}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-switchover
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+  jobSpec:
+    backoffLimit: 0
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: stack-ops
+            image: {{ $image }}
+            imagePullPolicy: {{ .Values.image.pullPolicy }}
+            env:
+              - name: WAIT_SECONDS
+                value: {{ $wait | quote }}
+              # KB 0.8 injects KB_CLUSTER_NAME for Custom Ops but not the
+              # operation namespace/name. The Job controller supplies job-name
+              # on its Pod, which is a traceable operation identifier.
+              - name: KB_OPS_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: KB_OPS_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['job-name']
+            command: [/bin/sh, -ec]
+            args:
+              - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/switchover.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-rejoin
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+  jobSpec:
+    backoffLimit: 0
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: stack-ops
+            image: {{ $image }}
+            imagePullPolicy: {{ .Values.image.pullPolicy }}
+            env:
+              - name: WAIT_SECONDS
+                value: {{ $wait | quote }}
+              - name: KB_OPS_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: KB_OPS_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['job-name']
+            command: [/bin/sh, -ec]
+            args:
+              - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/rejoin.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-rebuild
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [CONFIRM_FORCE_REBUILD]
+      properties:
+        CONFIRM_FORCE_REBUILD:
+          type: string
+          enum: ["true"]
+  jobSpec:
+    backoffLimit: 0
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: stack-ops
+            image: {{ $image }}
+            imagePullPolicy: {{ .Values.image.pullPolicy }}
+            env:
+              - name: WAIT_SECONDS
+                value: {{ $wait | quote }}
+              - name: KB_OPS_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: KB_OPS_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['job-name']
+            command: [/bin/sh, -ec]
+            args:
+              - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/rebuild.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-fence
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentDefinitionRefs:
+    - name: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE, FENCE_REASON]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+        FENCE_REASON:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9 .,:/_-]{0,119}$'
+  jobSpec:
+    backoffLimit: 0
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: stack-ops
+            image: {{ $image }}
+            imagePullPolicy: {{ .Values.image.pullPolicy }}
+            env:
+              - name: WAIT_SECONDS
+                value: {{ $wait | quote }}
+              - name: KB_OPS_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: KB_OPS_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['job-name']
+              - name: STONITH_ENDPOINT
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ $stonithSecret }}
+                    key: endpoint
+              - name: STONITH_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ $stonithSecret }}
+                    key: token
+            command: [/bin/sh, -ec]
+            args:
+              - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/fence.sh" | nindent 18 }}

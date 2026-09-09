@@ -1,0 +1,37 @@
+image:
+  registry: docker.io
+  repository: polardb/polardb_pg_local_instance
+  tag: "17"
+  digest: sha256:5e455bbb9a13e05d4c62ac1def1db776758b0180c4c2191c8a7f79c4f27884a4
+  pullPolicy: IfNotPresent
+
+componentDefinition:
+  # This name is intentionally below the KubeBlocks 0.8 component-name limit.
+  name: polardb-pg-local-v1
+
+clusterDefinition:
+  name: polardb-pg-local-kb08
+
+dataMountPath: /var/polardb
+
+localInstance:
+  port: 5432
+  serviceVersion: 17.11.1
+  engineVersion: 17.11.1.0
+
+backup:
+  # Restrict this to the Kubernetes Pod CIDR in production. The test default
+  # keeps the separate Backup Job usable on a fresh cluster.
+  replicationHbaCIDR: 0.0.0.0/0
+  replicationHbaAuthMethod: md5
+  schedule:
+    enabled: false
+    cronExpression: "0 2 * * *"
+    retentionPeriod: 7d
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi

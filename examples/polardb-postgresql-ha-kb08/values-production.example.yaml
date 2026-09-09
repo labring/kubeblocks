@@ -1,0 +1,19 @@
+# Replace all three digest placeholders with approved image digests before use.
+image:
+  digest: sha256:REPLACE_APPROVED_SPILO_DIGEST
+metrics:
+  image:
+    digest: sha256:REPLACE_APPROVED_POSTGRES_EXPORTER_DIGEST
+pgbouncer:
+  image:
+    digest: sha256:REPLACE_APPROVED_PGBOUNCER_DIGEST
+backup:
+  schedule:
+    enabled: true
+    cronExpression: "0 18 * * *"
+    retentionPeriod: 30d
+prometheusRule:
+  enabled: true
+ha:
+  switchover:
+    maxLagBytes: 0

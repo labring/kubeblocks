@@ -72,7 +72,7 @@ func (p *realUpdatePlan) planWalkFunc(vertex graph.Vertex) error {
 
 	// if pod is the latest version, we do nothing
 	if intctrlutil.GetPodRevision(pod) == p.rsm.Status.UpdateRevision {
-		if intctrlutil.PodIsReadyWithLabel(*pod) {
+		if podIsReadyForMemberUpdate(p.rsm, pod) {
 			return ErrContinue
 		} else {
 			return ErrWait
@@ -82,6 +82,16 @@ func (p *realUpdatePlan) planWalkFunc(vertex graph.Vertex) error {
 	// delete the pod to trigger associate StatefulSet to re-create it
 	p.podsToBeUpdated = append(p.podsToBeUpdated, pod)
 	return ErrStop
+}
+
+// podIsReadyForMemberUpdate preserves role-aware sequencing for database
+// components while allowing role-less stateless components to use their
+// Kubernetes readiness condition during a serial restart.
+func podIsReadyForMemberUpdate(rsm workloads.ReplicatedStateMachine, pod *corev1.Pod) bool {
+	if len(rsm.Spec.Roles) == 0 {
+		return intctrlutil.PodIsReady(pod)
+	}
+	return intctrlutil.PodIsReadyWithLabel(*pod)
 }
 
 // build builds the update plan based on updateStrategy

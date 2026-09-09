@@ -1,0 +1,14 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: pg-ha-rebuild
+  namespace: polardb-pg-ha-kb08
+spec:
+  clusterRef: pg-ha
+  type: Custom
+  customSpec:
+    componentName: postgresql
+    opsDefinitionRef: polardb-pg-ha-v1-rebuild
+    params:
+      - TARGET_INSTANCE: pg-ha-postgresql-0
+        CONFIRM_REBUILD: "true"

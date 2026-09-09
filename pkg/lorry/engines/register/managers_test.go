@@ -215,4 +215,11 @@ func TestInitDBManager(t *testing.T) {
 		_, err = NewClusterCommands(fakeCharacterType)
 		assert.Nil(t, err)
 	})
+
+	t.Run("polardb postgresql builtin handler is registered", func(t *testing.T) {
+		assert.NotNil(t, GetManagerNewFunc(string(models.PolarDBPostgreSQL), ""))
+		assert.NotNil(t, GetManagerNewFunc(string(models.PolarDBPostgreSQL), "replication"))
+		_, err = NewClusterCommands(string(models.PolarDBPostgreSQL))
+		assert.Nil(t, err)
+	})
 }

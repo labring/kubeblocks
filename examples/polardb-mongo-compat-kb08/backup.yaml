@@ -1,0 +1,9 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Backup
+metadata:
+  name: polardb-mongo-kb08-backup-v2
+  namespace: polardb-kb08-e2e
+spec:
+  backupMethod: mongodump
+  backupPolicyName: polardb-mongo-kb08-polardb-mongo-docdb-backup-policy
+  deletionPolicy: Delete

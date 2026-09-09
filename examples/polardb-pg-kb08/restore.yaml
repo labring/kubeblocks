@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-kb08-restore-v3
+  namespace: polardb-kb08-e2e
+spec:
+  clusterRef: polardb-pg-kb08-restore-v3
+  type: Restore
+  restoreSpec:
+    backupName: polardb-pg-kb08-backup-v2
+    volumeRestorePolicy: Serial

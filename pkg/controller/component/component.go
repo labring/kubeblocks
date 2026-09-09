@@ -72,9 +72,19 @@ func BuildComponent(cluster *appsv1alpha1.Cluster, clusterCompSpec *appsv1alpha1
 		}
 		return clusterCompSpec.ComponentDef
 	}
-	compBuilder := builder.NewComponentBuilder(cluster.Namespace, compName, compDefName()).
+	componentDefName := compDefName()
+	componentLabels := constant.GetComponentWellKnownLabels(cluster.Name, clusterCompSpec.Name)
+	if componentDefName != "" {
+		componentLabels = intctrlutil.MergeMetadataMaps(
+			componentLabels,
+			constant.GetKBWellKnownLabelsWithCompDef(componentDefName, cluster.Name, clusterCompSpec.Name),
+			constant.GetComponentDefLabel(componentDefName),
+			map[string]string{constant.ComponentDefinitionLabelKey: componentDefName},
+		)
+	}
+	compBuilder := builder.NewComponentBuilder(cluster.Namespace, compName, componentDefName).
 		AddAnnotations(constant.KubeBlocksGenerationKey, strconv.FormatInt(cluster.Generation, 10)).
-		AddLabelsInMap(constant.GetComponentWellKnownLabels(cluster.Name, clusterCompSpec.Name)).
+		AddLabelsInMap(componentLabels).
 		AddLabels(constant.KBAppClusterUIDLabelKey, string(cluster.UID)).
 		SetAffinity(affinities).
 		SetTolerations(tolerations).

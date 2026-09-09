@@ -212,6 +212,18 @@ func getCluster(ctx context.Context,
 	return cluster
 }
 
+// listObjectsOfCluster lists objects owned by a cluster through its well-known labels.
+func listObjectsOfCluster(ctx context.Context,
+	cli client.Client,
+	cluster *appsv1alpha1.Cluster,
+	object client.ObjectList) (client.ObjectList, error) {
+	labels := constant.GetClusterWellKnownLabels(cluster.Name)
+	if err := cli.List(ctx, object, client.InNamespace(cluster.Namespace), client.MatchingLabels(labels)); err != nil {
+		return nil, err
+	}
+	return object, nil
+}
+
 func getClusterLabelKeys() []string {
 	return []string{constant.AppInstanceLabelKey, constant.KBAppComponentLabelKey}
 }

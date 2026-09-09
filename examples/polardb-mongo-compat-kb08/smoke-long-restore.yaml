@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: polardb-mongo-kb08-smoke-long-restore-
+  namespace: polardb-kb08-e2e
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mongosh
+          image: docker.io/mongo:7.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-mongo-kb08-restore-long-v1-documentdb-account-ferretdb
+                  key: username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-mongo-kb08-restore-long-v1-documentdb-account-ferretdb
+                  key: password
+          command:
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+              uri="mongodb://${MONGO_USER}:${MONGO_PASSWORD}@polardb-mongo-kb08-restore-long-v1-ferretdb:27017/kbcompat?authMechanism=SCRAM-SHA-256&authSource=postgres"
+              mongosh "${uri}" --quiet --eval '
+                function check(condition, message) { if (!condition) { throw new Error(message); } }
+                const found = db.matrix.find({type: "alpha"}).sort({qty: -1}).toArray();
+                const indexes = db.matrix.getIndexes().map(index => index.name);
+                check(db.matrix.countDocuments({}) === 2, "restored document count");
+                check(found.length === 2 && found[0].qty === 7 && found[1].qty === 6, "restored sorted rows");
+                check(indexes.includes("type_qty"), "restored index");
+                print(JSON.stringify({count: db.matrix.countDocuments({}), found, indexes}));
+              '

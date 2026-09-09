@@ -1,0 +1,24 @@
+image:
+  # This is the operations control-plane image, not a database runtime. It
+  # contains kubectl and curl and is fixed by digest.
+  registry: ghcr.io
+  repository: wallyxjh/kubeblocks-tools
+  digest: sha256:fc798eecb8b7f8871ab662baab63387ee1a2d0bbd64061a662e2c315c156ca38
+  pullPolicy: IfNotPresent
+
+controlComponentDefinition:
+  # The component is intentionally constrained to zero replicas. It is only a
+  # KubeBlocks Cluster/OpsRequest anchor; Stack owns all database resources.
+  # Cluster.spec.componentSpecs[].componentDef is limited to 22 characters in
+  # KubeBlocks 0.8, so this deliberately differs from the 0.9 control name.
+  name: polardb-pg-stack-v1
+  serviceVersion: 1.0.0
+
+clusterDefinition:
+  # KB 0.8 still needs a ClusterDefinition anchor for direct
+  # ComponentDefinition clusters.
+  name: polardb-pg-stack-kb08
+
+ops:
+  timeoutSeconds: 900
+  stonithSecretName: polardb-pg-stonith

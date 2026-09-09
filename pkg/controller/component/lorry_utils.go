@@ -36,7 +36,8 @@ import (
 )
 
 const (
-	dataVolume = "data"
+	dataVolume             = "data"
+	patroniManagedLabelKey = "apps.kubeblocks.io/patroni-managed"
 )
 
 var (
@@ -212,11 +213,12 @@ func buildLorryInitContainer() *corev1.Container {
 }
 
 func buildLorryEnvs(container *corev1.Container, synthesizeComp *SynthesizedComponent, clusterCompSpec *appsv1alpha1.ClusterComponentSpec) {
+	builtinHandler := getBuiltinActionHandler(synthesizeComp)
 	envs := []corev1.EnvVar{
 		// inject the default built-in handler env to lorry container.
 		{
 			Name:      constant.KBEnvBuiltinHandler,
-			Value:     string(getBuiltinActionHandler(synthesizeComp)),
+			Value:     string(builtinHandler),
 			ValueFrom: nil,
 		},
 	}
@@ -262,7 +264,37 @@ func buildLorryEnvs(container *corev1.Container, synthesizeComp *SynthesizedComp
 		envs = append(envs, buildEnv4VolumeProtection(*synthesizeComp.VolumeProtection))
 	}
 
+	// Patroni is the only authority for PostgreSQL role election in this addon.
+	// Preserve an explicit value from the database container, otherwise prevent
+	// Lorry from initializing a second HA control loop. KB 0.8 reuses its
+	// shipped postgresql handler for the addon, so a component label identifies
+	// the Patroni-managed compatibility path.
+	if builtinHandler == appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler ||
+		isPatroniManagedPostgreSQL(synthesizeComp) {
+		envs = appendPolarDBPostgreSQLHAEnv(envs, mainContainer)
+	}
+
 	container.Env = append(container.Env, envs...)
+}
+
+func isPatroniManagedPostgreSQL(synthesizeComp *SynthesizedComponent) bool {
+	return synthesizeComp != nil && synthesizeComp.Labels[patroniManagedLabelKey] == "true"
+}
+
+func appendPolarDBPostgreSQLHAEnv(envs []corev1.EnvVar, mainContainer *corev1.Container) []corev1.EnvVar {
+	for _, env := range envs {
+		if env.Name == constant.KBEnvEnableHA {
+			return envs
+		}
+	}
+	if mainContainer != nil {
+		for _, env := range mainContainer.Env {
+			if env.Name == constant.KBEnvEnableHA {
+				return append(envs, env)
+			}
+		}
+	}
+	return append(envs, corev1.EnvVar{Name: constant.KBEnvEnableHA, Value: "false"})
 }
 
 func buildRoleProbeContainer(roleChangedContainer *corev1.Container, roleProbe *appsv1alpha1.RoleProbe, probeSvcHTTPPort int) {

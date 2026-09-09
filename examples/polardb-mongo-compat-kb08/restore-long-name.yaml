@@ -1,0 +1,32 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Restore
+metadata:
+  name: polardb-mongo-kb08-restore-name-that-exceeds-the-kubernetes-label-value-limit-v1
+  namespace: polardb-kb08-e2e
+spec:
+  backup:
+    name: polardb-mongo-kb08-backup-v2
+    namespace: polardb-kb08-e2e
+  readyConfig:
+    jobAction:
+      target:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: polardb-mongo-kb08-restore-long-v1
+            app.kubernetes.io/managed-by: kubeblocks
+            apps.kubeblocks.io/component-name: documentdb
+    connectionCredential:
+      secretName: polardb-mongo-kb08-restore-long-v1-documentdb-account-ferretdb
+      usernameKey: username
+      passwordKey: password
+  env:
+    - name: MONGO_TARGET_CLUSTER
+      value: polardb-mongo-kb08-restore-long-v1
+  containerResources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  backoffLimit: 1

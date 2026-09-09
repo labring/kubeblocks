@@ -1,0 +1,13 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-rebuild
+  namespace: polardb-stack-demo
+spec:
+  clusterRef: polardb-stack-demo
+  type: Custom
+  customSpec:
+    componentName: control
+    opsDefinitionRef: polardb-pg-stack-rebuild
+    params:
+      - CONFIRM_FORCE_REBUILD: "true"

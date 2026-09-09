@@ -1,0 +1,25 @@
+# Apply this only when the official MPDCluster is in a namespace different
+# from the KubeBlocks binding Cluster. Replace the namespace placeholder first.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: polardb-pg-stack-ops-mpdcluster
+  namespace: REPLACE_MPDCLUSTER_NAMESPACE
+rules:
+  - apiGroups: [mpd.polardb.aliyun.com]
+    resources: [mpdclusters]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: polardb-pg-stack-ops-mpdcluster
+  namespace: REPLACE_MPDCLUSTER_NAMESPACE
+subjects:
+  - kind: ServiceAccount
+    name: polardb-pg-stack-ops
+    namespace: polardb-stack-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: polardb-pg-stack-ops-mpdcluster

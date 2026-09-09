@@ -20,14 +20,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package operations
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"time"
 
 	"github.com/pkg/errors"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,6 +43,8 @@ import (
 type switchoverOpsHandler struct{}
 
 var _ OpsHandler = switchoverOpsHandler{}
+
+var errSwitchoverJobFailed = errors.New("switchover job failed")
 
 // SwitchoverMessage is the OpsRequest.Status.Condition.Message for switchover.
 type SwitchoverMessage struct {
@@ -98,6 +104,9 @@ func (r switchoverOpsHandler) ReconcileAction(reqCtx intctrlutil.RequestCtx, cli
 
 	expectCount, actualCount, err := handleSwitchoverProgress(reqCtx, cli, opsRes)
 	if err != nil {
+		if errors.Is(err, errSwitchoverJobFailed) {
+			return appsv1alpha1.OpsFailedPhase, 0, err
+		}
 		return "", 0, err
 	}
 
@@ -196,6 +205,17 @@ func handleSwitchoverProgress(reqCtx intctrlutil.RequestCtx, cli client.Client, 
 			Status:    appsv1alpha1.ProcessingProgressStatus,
 		}
 		if err = component.CheckJobSucceed(reqCtx.Ctx, cli, opsRes.Cluster, jobName); err != nil {
+			failed, getErr := switchoverJobFailed(reqCtx.Ctx, cli, opsRes.Cluster, jobName)
+			if getErr != nil {
+				return expectCount, completedCount, getErr
+			}
+			if failed {
+				checkJobProcessDetail.Status = appsv1alpha1.FailedProgressStatus
+				checkJobProcessDetail.Message = fmt.Sprintf("switchover job %s failed", jobName)
+				setComponentSwitchoverProgressDetails(reqCtx.Recorder, opsRequest, appsv1alpha1.UpdatingClusterCompPhase, checkJobProcessDetail, switchover.ComponentName)
+				err = errors.Wrapf(errSwitchoverJobFailed, "%s", jobName)
+				break
+			}
 			checkJobProcessDetail.Message = fmt.Sprintf("switchover job %s is not succeed", jobName)
 			setComponentSwitchoverProgressDetails(reqCtx.Recorder, opsRequest, appsv1alpha1.UpdatingClusterCompPhase, checkJobProcessDetail, switchover.ComponentName)
 			continue
@@ -269,6 +289,20 @@ func handleSwitchoverProgress(reqCtx intctrlutil.RequestCtx, cli client.Client, 
 	}
 
 	return expectCount, completedCount, nil
+}
+
+func switchoverJobFailed(ctx context.Context, cli client.Client, cluster *appsv1alpha1.Cluster, jobName string) (bool, error) {
+	job := &batchv1.Job{}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: jobName}
+	if err := cli.Get(ctx, key, job); err != nil {
+		return false, err
+	}
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // setComponentSwitchoverProgressDetails sets component switchover progress details.

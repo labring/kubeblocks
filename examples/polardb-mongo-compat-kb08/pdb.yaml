@@ -1,0 +1,23 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: polardb-mongo-kb08-documentdb
+  namespace: polardb-kb08-e2e
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: polardb-mongo-kb08
+      apps.kubeblocks.io/component-name: documentdb
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: polardb-mongo-kb08-ferretdb
+  namespace: polardb-kb08-e2e
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: polardb-mongo-kb08
+      apps.kubeblocks.io/component-name: ferretdb

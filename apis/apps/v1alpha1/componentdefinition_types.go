@@ -498,7 +498,7 @@ type Action struct {
 	PreCondition *PreConditionType `json:"preCondition,omitempty"`
 }
 
-// BuiltinActionHandlerType defines build-in action handlers provided by Lorry.
+// BuiltinActionHandlerType defines built-in action handlers provided by Lorry.
 type BuiltinActionHandlerType string
 
 const (
@@ -511,14 +511,21 @@ const (
 	PostgresqlBuiltinActionHandler         BuiltinActionHandlerType = "postgresql"
 	OfficialPostgresqlBuiltinActionHandler BuiltinActionHandlerType = "official-postgresql"
 	ApeCloudPostgresqlBuiltinActionHandler BuiltinActionHandlerType = "apecloud-postgresql"
-	PolarDBXBuiltinActionHandler           BuiltinActionHandlerType = "polardbx"
-	CustomActionHandler                    BuiltinActionHandlerType = "custom"
-	UnknownBuiltinActionHandler            BuiltinActionHandlerType = "unknown"
+	// PolarDBPostgresqlBuiltinActionHandler identifies the isolated Patroni
+	// integration shipped by the polardb-postgresql addon. It intentionally
+	// shares PostgreSQL probes while disabling Lorry's competing HA loop.
+	PolarDBPostgresqlBuiltinActionHandler BuiltinActionHandlerType = "polardb-postgresql"
+	PolarDBXBuiltinActionHandler          BuiltinActionHandlerType = "polardbx"
+	CustomActionHandler                   BuiltinActionHandlerType = "custom"
+	UnknownBuiltinActionHandler           BuiltinActionHandlerType = "unknown"
 )
 
 type LifecycleActionHandler struct {
-	// builtinHandler specifies the builtin action handler name to do the action.
-	// the BuiltinHandler within the same ComponentLifecycleActions should be consistent. Details can be queried through official documentation in the future.
+	// builtinHandler specifies the built-in action handler name to do the action.
+	// The BuiltinHandler within the same ComponentLifecycleActions should be consistent. Details can be queried through official documentation in the future.
+	// Supported values include `mysql`, `redis`, `mongodb`, `etcd`, `postgresql`,
+	// `official-postgresql`, `apecloud-postgresql`, `polardb-postgresql`, `wesql`,
+	// `oceanbase`, and `polardbx`.
 	// use CustomHandler to define your own actions if none of them satisfies the requirement.
 	// +optional
 	BuiltinHandler *BuiltinActionHandlerType `json:"builtinHandler,omitempty"`
