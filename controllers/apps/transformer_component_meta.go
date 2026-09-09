@@ -54,5 +54,5 @@ func (t *componentMetaTransformer) Transform(ctx graph.TransformContext, dag *gr
 	graphCli, _ := transCtx.Client.(model.GraphClient)
 	graphCli.Update(dag, transCtx.ComponentOrig, comp)
 
-	return graph.ErrPrematureStop
+	return nil
 }

@@ -1,0 +1,57 @@
+image:
+  registry: docker.io
+  repository: polardb/polardb_pg_local_instance
+  # The official PolarDB-PG 17 image was verified on the KB 0.9 test cluster.
+  tag: "17"
+  # Linux/amd64 manifest for polardb/polardb_pg_local_instance:17.
+  digest: sha256:5e455bbb9a13e05d4c62ac1def1db776758b0180c4c2191c8a7f79c4f27884a4
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+componentDefinition:
+  # ComponentDefinitions are immutable in KubeBlocks 0.9. Change this name for
+  # any incompatible engine or runtime change.
+  name: polardb-pg-local-v4
+
+dataMountPath: /var/polardb
+
+# This chart deliberately manages one localfs PolarDB-PG engine Pod. It does
+# not implement PolarDB shared-storage HA and must not be used as production HA.
+localInstance:
+  port: 5432
+  # KubeBlocks 0.9 ComponentVersion accepts three-part SemVer only.
+  serviceVersion: 17.11.1
+  # The official engine banner is PostgreSQL 17.11 (PolarDB 17.11.1.0 ...).
+  engineVersion: 17.11.1.0
+
+# The action set performs an engine-level physical base backup and streams it
+# through KubeBlocks datasafed to a BackupRepo with accessMethod: Tool. It is
+# intentionally scoped to the local-instance component definition. Restoring a
+# shared-storage MPDCluster requires PolarDB Stack topology metadata and is not
+# provided by this action set.
+backup:
+  # The official local-instance entrypoint permits normal TCP clients but does
+  # not add a replication record to pg_hba.conf. The postStart hook adds this
+  # rule after the entrypoint initializes the data directory so pg_basebackup
+  # can run in a separate KubeBlocks backup Job. For a production environment,
+  # override this with the actual Kubernetes Pod CIDR, never 0.0.0.0/0.
+  replicationHbaCIDR: 0.0.0.0/0
+  replicationHbaAuthMethod: md5
+  schedule:
+    enabled: false
+    cronExpression: "0 2 * * *"
+    retentionPeriod: 7d
+
+# Alert rules are opt-in because the target cluster must scrape the referenced
+# kube-state-metrics custom-resource metrics. Enable vmRule for VictoriaMetrics
+# VMAlert or prometheusRule for a Prometheus Operator deployment.
+alertRule:
+  backupFailureMinutes: 15
+  restoreDrillFailureMinutes: 15
+  opsFailureMinutes: 5
+
+prometheusRule:
+  enabled: false
+
+vmRule:
+  enabled: false

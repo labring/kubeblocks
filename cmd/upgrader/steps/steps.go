@@ -47,10 +47,10 @@ func RegisterAll(modules map[string]bool) []Step {
 			&FixRedisAndWait{Snapshot: redisSnap},
 			&FixMySQLCVAndWait{Snapshot: mysqlSnap},
 			&FixMySQLLowercaseAndWait{Snapshot: mysqlLcSnap},
-			scriptStep{"verify_pg", "验证 PostgreSQL 连通性 + 主从", "scripts/verify_pg.sh"},
-			scriptStep{"verify_mysql", "验证 MySQL 连通性 + 主从", "scripts/verify_mysql.sh"},
-			scriptStep{"verify_redis", "验证 Redis 连通性 + 密码 + 主从", "scripts/verify_redis.sh"},
-			scriptStep{"verify_mongo", "验证 MongoDB 连通性 + 主从", "scripts/verify_mongo.sh"},
+			scriptStep{"verify_pg", "verify PostgreSQL connectivity and replication", "scripts/verify_pg.sh"},
+			scriptStep{"verify_mysql", "verify MySQL connectivity and replication", "scripts/verify_mysql.sh"},
+			scriptStep{"verify_redis", "verify Redis connectivity, password, and replication", "scripts/verify_redis.sh"},
+			scriptStep{"verify_mongo", "verify MongoDB connectivity and replication", "scripts/verify_mongo.sh"},
 		)
 	}
 
@@ -58,7 +58,7 @@ func RegisterAll(modules map[string]bool) []Step {
 }
 
 // ===================================================================
-//  Core 模块
+// Core module.
 // ===================================================================
 
 // --- AnnotateAddons ---
@@ -66,7 +66,7 @@ func RegisterAll(modules map[string]bool) []Step {
 type AnnotateAddons struct{}
 
 func (s *AnnotateAddons) Name() string        { return "annotate_addons" }
-func (s *AnnotateAddons) Description() string { return "给 Addon 添加 resource-policy=keep 注解" }
+func (s *AnnotateAddons) Description() string { return "add resource-policy=keep annotation to Addons" }
 
 func (s *AnnotateAddons) Check(opts RunOptions) (bool, error) {
 	out, err := kubectl(opts, "get", "addons.extensions.kubeblocks.io",
@@ -107,7 +107,7 @@ func (s *AnnotateAddons) Run(opts RunOptions) error {
 type InstallCRDs struct{}
 
 func (s *InstallCRDs) Name() string        { return "install_crds" }
-func (s *InstallCRDs) Description() string { return "安装 v0.9.3 新增 CRD" }
+func (s *InstallCRDs) Description() string { return "install CRDs introduced in v0.9.3" }
 
 func (s *InstallCRDs) Check(opts RunOptions) (bool, error) {
 	_, err := kubectl(opts, "get", "crd", "storageproviders.dataprotection.kubeblocks.io")
@@ -125,7 +125,7 @@ func (s *InstallCRDs) Run(opts RunOptions) error {
 type DeleteIncompatibleOps struct{}
 
 func (s *DeleteIncompatibleOps) Name() string        { return "delete_incompatible_ops" }
-func (s *DeleteIncompatibleOps) Description() string { return "删除不兼容的 OpsDefinition" }
+func (s *DeleteIncompatibleOps) Description() string { return "delete incompatible OpsDefinitions" }
 
 var incompatibleOps = []string{"kafka-quota", "kafka-topic", "kafka-user-acl", "switchover"}
 
@@ -153,16 +153,18 @@ func (s *DeleteIncompatibleOps) Run(opts RunOptions) error {
 		if err := json.Unmarshal([]byte(out), &obj); err == nil {
 			if spec, _ := obj["spec"].(map[string]interface{}); spec != nil {
 				if _, ok := spec["actions"]; !ok {
-					logInfo("%s 缺少 spec.actions，先 patch", name)
-					kubectl(opts, "patch", "opsdefinitions.apps.kubeblocks.io", name,
-						"--type=merge", "-p", `{"spec":{"actions":[{"failurePolicy":"Fail","name":"placeholder","workload":{"backoffLimit":2,"podSpec":{"containers":[{"command":["echo"],"image":"busybox","imagePullPolicy":"IfNotPresent","name":"placeholder"}]},"type":"Job"}}]}}`)
+					logInfo("%s is missing spec.actions; patching it first", name)
+					if _, err := kubectl(opts, "patch", "opsdefinitions.apps.kubeblocks.io", name,
+						"--type=merge", "-p", `{"spec":{"actions":[{"failurePolicy":"Fail","name":"placeholder","workload":{"backoffLimit":2,"podSpec":{"containers":[{"command":["echo"],"image":"busybox","imagePullPolicy":"IfNotPresent","name":"placeholder"}]},"type":"Job"}}]}}`); err != nil {
+						return fmt.Errorf("failed to patch OpsDefinition %s: %w", name, err)
+					}
 				}
 			}
 		}
 		if _, err := kubectl(opts, "delete", "opsdefinitions.apps.kubeblocks.io", name, "--ignore-not-found"); err != nil {
 			return err
 		}
-		logOK("已删除 %s", name)
+		logOK("deleted %s", name)
 	}
 	return nil
 }
@@ -172,7 +174,7 @@ func (s *DeleteIncompatibleOps) Run(opts RunOptions) error {
 type HelmUpgradeKubeBlocks struct{}
 
 func (s *HelmUpgradeKubeBlocks) Name() string        { return "helm_upgrade" }
-func (s *HelmUpgradeKubeBlocks) Description() string { return "Helm upgrade KubeBlocks 到 v0.9.3" }
+func (s *HelmUpgradeKubeBlocks) Description() string { return "upgrade KubeBlocks to v0.9.3 with Helm" }
 
 func (s *HelmUpgradeKubeBlocks) Check(opts RunOptions) (bool, error) {
 	return checkHelmChartVersion(opts, "kb-system", "kubeblocks", "-0.9.3"), nil
@@ -180,7 +182,7 @@ func (s *HelmUpgradeKubeBlocks) Check(opts RunOptions) (bool, error) {
 
 func (s *HelmUpgradeKubeBlocks) Run(opts RunOptions) error {
 	if _, err := runCmd(opts, "helm", "repo", "add", "kubeblocks", "https://apecloud.github.io/helm-charts"); err != nil {
-		logWarn("helm repo add 失败（repo 可能已存在）: %v", err)
+		logWarn("helm repo add failed (the repo may already exist): %v", err)
 	}
 	if _, err := runCmd(opts, "helm", "repo", "update", "kubeblocks"); err != nil {
 		return err
@@ -204,9 +206,9 @@ func (s *HelmUpgradeKubeBlocks) Run(opts RunOptions) error {
 type UpgradeKbcli struct{}
 
 func (s *UpgradeKbcli) Name() string        { return "upgrade_kbcli" }
-func (s *UpgradeKbcli) Description() string { return "升级 kbcli 到 v0.9.3" }
+func (s *UpgradeKbcli) Description() string { return "upgrade kbcli to v0.9.3" }
 
-// kbcliClientVersion 从 `kbcli version` 文本中解析客户端版本（匹配 "kbcli: x.y.z" 行）。
+// kbcliClientVersion parses the client version from the "kbcli: x.y.z" line.
 func kbcliClientVersion(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -248,7 +250,7 @@ type PatchKBImages struct {
 }
 
 func (s *PatchKBImages) Name() string        { return "patch_kb_images" }
-func (s *PatchKBImages) Description() string { return "替换 KubeBlocks 自定义镜像" }
+func (s *PatchKBImages) Description() string { return "replace custom KubeBlocks images" }
 
 func (s *PatchKBImages) Check(opts RunOptions) (bool, error) {
 	if !checkDeploymentImage(opts, "kb-system", "kubeblocks", "manager", targetManagerImage) {
@@ -260,7 +262,7 @@ func (s *PatchKBImages) Check(opts RunOptions) (bool, error) {
 func (s *PatchKBImages) Run(opts RunOptions) error {
 	snap, err := snapshotHelmTrackedAddons(opts)
 	if err != nil {
-		logWarn("快照 Helm 侧 Addon 失败: %v", err)
+		logWarn("failed to snapshot Helm-managed Addons: %v", err)
 	} else if s.AddonSnapshot != nil {
 		*s.AddonSnapshot = *snap
 	}
@@ -274,7 +276,7 @@ type WaitKBReady struct {
 }
 
 func (s *WaitKBReady) Name() string        { return "wait_kb_ready" }
-func (s *WaitKBReady) Description() string { return "等待 KubeBlocks 控制器 + Addon 就绪" }
+func (s *WaitKBReady) Description() string { return "wait for KubeBlocks controllers and Addons" }
 
 func (s *WaitKBReady) Check(opts RunOptions) (bool, error) {
 	if !checkDeploymentReady(opts, "kb-system", "kubeblocks") ||
@@ -295,13 +297,15 @@ func (s *WaitKBReady) Run(opts RunOptions) error {
 }
 
 // ===================================================================
-//  ClickHouse 模块
+// ClickHouse module.
 // ===================================================================
 
 type UpgradeClickHouseAddon struct{}
 
-func (s *UpgradeClickHouseAddon) Name() string        { return "upgrade_clickhouse" }
-func (s *UpgradeClickHouseAddon) Description() string { return "升级 ClickHouse addon 到 v0.9.1" }
+func (s *UpgradeClickHouseAddon) Name() string { return "upgrade_clickhouse" }
+func (s *UpgradeClickHouseAddon) Description() string {
+	return "upgrade the ClickHouse Addon to v0.9.1"
+}
 
 func (s *UpgradeClickHouseAddon) Check(opts RunOptions) (bool, error) {
 	return checkHelmChartVersion(opts, "kb-system", "kb-addon-clickhouse", "-0.9.1"), nil
@@ -311,8 +315,10 @@ func (s *UpgradeClickHouseAddon) Run(opts RunOptions) error {
 	if _, err := runCmd(opts, "kbcli", "addon", "upgrade", "clickhouse", "--version", "0.9.1"); err == nil {
 		return nil
 	}
-	logWarn("kbcli 升级失败，回退到 helm")
-	runCmd(opts, "helm", "uninstall", "kb-addon-clickhouse", "--namespace", "kb-system")
+	logWarn("kbcli upgrade failed; falling back to Helm")
+	if _, err := runCmd(opts, "helm", "uninstall", "kb-addon-clickhouse", "--namespace", "kb-system"); err != nil {
+		logWarn("failed to uninstall the existing ClickHouse release: %v", err)
+	}
 	_, err := runCmd(opts, "helm", "install",
 		"kb-addon-clickhouse", "kubeblocks/clickhouse",
 		"--namespace", "kb-system", "--create-namespace", "--version", "0.9.1")
@@ -320,7 +326,7 @@ func (s *UpgradeClickHouseAddon) Run(opts RunOptions) error {
 }
 
 // ===================================================================
-//  DBFix 模块
+// DBFix module.
 // ===================================================================
 
 func checkRedisNeedsFix(opts RunOptions) (bool, error) {
@@ -434,7 +440,7 @@ func runFixRedis(opts RunOptions, snapshot *ResourceSnapshot) error {
 		return err
 	}
 	if err := runScript(opts, "scripts/fix_redis_cluster.sh"); err != nil {
-		return fmt.Errorf("修复 Redis cluster 失败: %w", err)
+		return fmt.Errorf("failed to repair Redis cluster: %w", err)
 	}
 	if err := runScript(opts, "scripts/restart_redis.sh"); err != nil {
 		return err
@@ -448,7 +454,7 @@ type FixRedisAndWait struct {
 
 func (s *FixRedisAndWait) Name() string { return "fix_redis_and_wait" }
 func (s *FixRedisAndWait) Description() string {
-	return "修复 Redis 集群 CR + 重启 + 等待就绪"
+	return "repair Redis Cluster CR, restart, and wait for readiness"
 }
 func (s *FixRedisAndWait) Check(opts RunOptions) (bool, error) {
 	needsFix, err := checkRedisNeedsFix(opts)
@@ -533,10 +539,10 @@ func checkMySQLVersionNeedsFix(opts RunOptions) (bool, error) {
 func runFixMySQLCV(opts RunOptions, snapshot *ResourceSnapshot) error {
 	saveSnapshot(opts, "mysql", snapshot)
 	if err := runScript(opts, "scripts/fix_mysql_cv.sh"); err != nil {
-		return fmt.Errorf("修复 MySQL 版本映射失败: %w", err)
+		return fmt.Errorf("failed to repair MySQL version mapping: %w", err)
 	}
 	if err := runScript(opts, "scripts/restart_mysql.sh"); err != nil {
-		return fmt.Errorf("重启 MySQL 失败: %w", err)
+		return fmt.Errorf("failed to restart MySQL: %w", err)
 	}
 	return nil
 }
@@ -547,7 +553,7 @@ type FixMySQLCVAndWait struct {
 
 func (s *FixMySQLCVAndWait) Name() string { return "fix_mysql_cv_and_wait" }
 func (s *FixMySQLCVAndWait) Description() string {
-	return "修复 MySQL 版本映射 + 必要时补 lowercase + 等待就绪"
+	return "repair MySQL version mapping, set lowercase when needed, and wait for readiness"
 }
 func (s *FixMySQLCVAndWait) Check(opts RunOptions) (bool, error) {
 	needsFix, err := checkMySQLVersionNeedsFix(opts)
@@ -671,7 +677,7 @@ type FixMySQLLowercaseAndWait struct {
 
 func (s *FixMySQLLowercaseAndWait) Name() string { return "fix_mysql_lowercase_and_wait" }
 func (s *FixMySQLLowercaseAndWait) Description() string {
-	return "修复 MySQL lower_case_table_names + 等待就绪"
+	return "repair MySQL lower_case_table_names and wait for readiness"
 }
 func (s *FixMySQLLowercaseAndWait) Check(opts RunOptions) (bool, error) {
 	needsFix, err := checkMySQLLowercaseNeedsFix(opts)
@@ -696,9 +702,8 @@ func waitDBReady(opts RunOptions, dbType string, snap *ResourceSnapshot) error {
 		}
 	}
 	if len(snap.Names) == 0 {
-		logInfo("无 %s 集群需要等待", dbType)
+		logInfo("no %s clusters require waiting", dbType)
 		return nil
 	}
 	return watchFromSnapshot(opts.Ctx, snap, []string{"cluster", "-A"}, clusterTerminalPhases)
 }
-

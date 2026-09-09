@@ -919,23 +919,33 @@ func TestShouldRecordPostgreSQLReplicationWarningOnlyWhenReasonChanges(t *testin
 func TestPostgreSQLComponentRecognizesBuiltinHandler(t *testing.T) {
 	t.Parallel()
 
-	handler := appsv1alpha1.OfficialPostgresqlBuiltinActionHandler
-	transCtx := &componentTransformContext{
-		CompDef: &appsv1alpha1.ComponentDefinition{
-			Spec: appsv1alpha1.ComponentDefinitionSpec{
-				LifecycleActions: &appsv1alpha1.ComponentLifecycleActions{
-					RoleProbe: &appsv1alpha1.RoleProbe{
-						LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
-							BuiltinHandler: &handler,
+	tests := []appsv1alpha1.BuiltinActionHandlerType{
+		appsv1alpha1.OfficialPostgresqlBuiltinActionHandler,
+		appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler,
+	}
+	for _, handler := range tests {
+		handler := handler
+		t.Run(string(handler), func(t *testing.T) {
+			t.Parallel()
+
+			transCtx := &componentTransformContext{
+				CompDef: &appsv1alpha1.ComponentDefinition{
+					Spec: appsv1alpha1.ComponentDefinitionSpec{
+						LifecycleActions: &appsv1alpha1.ComponentLifecycleActions{
+							RoleProbe: &appsv1alpha1.RoleProbe{
+								LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+									BuiltinHandler: &handler,
+								},
+							},
 						},
 					},
 				},
-			},
-		},
-	}
+			}
 
-	require.False(t, isPostgreSQLComponent(transCtx))
-	require.True(t, isPostgreSQLComponentForReplicationHealth(transCtx))
+			require.False(t, isPostgreSQLComponent(transCtx))
+			require.True(t, isPostgreSQLComponentForReplicationHealth(transCtx))
+		})
+	}
 }
 
 func newPostgreSQLReplicationHealthTestContext(

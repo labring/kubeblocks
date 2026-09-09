@@ -1,0 +1,14 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-rejoin-instance
+  namespace: kb-polardb-pg
+spec:
+  clusterName: polardb-pg
+  type: HorizontalScaling
+  horizontalScaling:
+  - componentName: postgresql
+    scaleOut:
+      replicaChanges: 1
+      offlineInstancesToOnline:
+      - polardb-pg-postgresql-0

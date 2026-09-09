@@ -1,0 +1,19 @@
+# API-contract test only. A test harness must emulate Stack status updates; do
+# not submit this to a real MPDCluster.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-contract-switchover
+  namespace: polardb-stack-contract-test
+spec:
+  clusterName: polardb-stack-contract-test
+  type: Custom
+  timeoutSeconds: 180
+  custom:
+    opsDefinitionName: polardb-pg-stack-switchover
+    serviceAccountName: polardb-pg-stack-ops
+    components:
+      - componentName: control
+        parameters:
+          - name: TARGET_INSTANCE
+            value: ro-1

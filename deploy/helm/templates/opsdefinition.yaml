@@ -48,7 +48,7 @@ spec:
         podSpec:
           containers:
             - name: switchover
-              image: {{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+              image: {{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.tools.digest) }}
               imagePullPolicy: IfNotPresent
               command:
                 - sh

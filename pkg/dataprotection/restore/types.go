@@ -54,7 +54,8 @@ const (
 
 // Annotations key
 const (
-	DataProtectionBackupExtrasLabelKey = "dataprotection.kubeblocks.io/backup-extras"
+	DataProtectionBackupExtrasLabelKey     = "dataprotection.kubeblocks.io/backup-extras"
+	DataProtectionRestoreNameAnnotationKey = "dataprotection.kubeblocks.io/restore-name"
 )
 
 // env name for restore

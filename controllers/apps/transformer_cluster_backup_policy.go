@@ -796,7 +796,8 @@ func (r *clusterBackupPolicyTransformer) defaultBackupMethodByServiceKind(comp c
 		return defaultMongoBackupMethod
 	case string(appsv1alpha1.PostgresqlBuiltinActionHandler),
 		string(appsv1alpha1.OfficialPostgresqlBuiltinActionHandler),
-		string(appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler):
+		string(appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler),
+		string(appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler):
 		return defaultPostgresBackupMethod
 	default:
 		return ""
@@ -819,18 +820,6 @@ func defaultBackupMethodByCompDefName(compDefName string) string {
 	}
 }
 
-func hasBackupMethod(backupPolicy *dpv1alpha1.BackupPolicy, method string) bool {
-	if backupPolicy == nil || method == "" {
-		return false
-	}
-	for _, m := range backupPolicy.Spec.BackupMethods {
-		if m.Name == method {
-			return true
-		}
-	}
-	return false
-}
-
 func builtinHandlerFromLifecycleActions(actions *appsv1alpha1.ComponentLifecycleActions) appsv1alpha1.BuiltinActionHandlerType {
 	if actions == nil {
 		return ""
@@ -851,6 +840,9 @@ func builtinHandlerFromLifecycleActions(actions *appsv1alpha1.ComponentLifecycle
 		if handler != nil && handler.BuiltinHandler != nil {
 			return *handler.BuiltinHandler
 		}
+	}
+	if actions.RoleProbe != nil && actions.RoleProbe.BuiltinHandler != nil {
+		return *actions.RoleProbe.BuiltinHandler
 	}
 	return ""
 }

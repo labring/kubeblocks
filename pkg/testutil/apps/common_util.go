@@ -332,9 +332,9 @@ func ClearResourcesWithRemoveFinalizerOption[T intctrlutil.Object, PT intctrluti
 		items := reflect.ValueOf(&objList).Elem().FieldByName("Items").Interface().([]T)
 		for _, obj := range items {
 			pobj := PT(&obj)
-			if pobj.GetDeletionTimestamp().IsZero() {
-				panic("expected DeletionTimestamp is not nil")
-			}
+			// A controller can create a matching object between DeleteAllOf and List.
+			// Let Eventually retry so the next DeleteAllOf includes that object.
+			g.Expect(pobj.GetDeletionTimestamp()).NotTo(gomega.BeNil())
 			finalizers := pobj.GetFinalizers()
 			if len(finalizers) > 0 {
 				if removeFinalizer {

@@ -21,6 +21,14 @@ on:
         description: 'Image repository for kubeblocks-datascript (e.g. ghcr.io/labring/kubeblocks-datascript)'
         required: false
         default: ''
+      dataprotection_image_repo:
+        description: 'Image repository for kubeblocks-dataprotection (e.g. ghcr.io/labring/kubeblocks-dataprotection)'
+        required: false
+        default: ''
+      charts_image_repo:
+        description: 'Image repository for kubeblocks-addon-charts (e.g. ghcr.io/labring/kubeblocks-addon-charts)'
+        required: false
+        default: ''
   release:
     types:
       - published
@@ -78,6 +86,14 @@ jobs:
             dockerfile: ./docker/Dockerfile-datascript
             context: .
             image_repo: ${{ inputs.datascript_image_repo != '' && inputs.datascript_image_repo || format('ghcr.io/{0}/kubeblocks-datascript', github.repository_owner) }}
+          - image: kubeblocks-dataprotection
+            dockerfile: ./docker/Dockerfile-dataprotection
+            context: .
+            image_repo: ${{ inputs.dataprotection_image_repo != '' && inputs.dataprotection_image_repo || format('ghcr.io/{0}/kubeblocks-dataprotection', github.repository_owner) }}
+          - image: kubeblocks-addon-charts
+            dockerfile: ./docker/Dockerfile-charts
+            context: .
+            image_repo: ${{ inputs.charts_image_repo != '' && inputs.charts_image_repo || format('ghcr.io/{0}/kubeblocks-addon-charts', github.repository_owner) }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up QEMU

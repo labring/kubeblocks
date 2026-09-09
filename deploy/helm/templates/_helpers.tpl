@@ -68,6 +68,17 @@ Create the addon installer name of the service account to use
 {{- printf "%s-%s" (include "kubeblocks.serviceAccountName" .) "addon-installer" }}
 {{- end }}
 
+{{/* Render an image reference, preferring a content digest over a tag. */}}
+{{- define "kubeblocks.image" -}}
+{{- $registry := .registry | default "docker.io" -}}
+{{- $image := printf "%s/%s" $registry .repository -}}
+{{- if .digest -}}
+{{- printf "%s@%s" $image .digest -}}
+{{- else -}}
+{{- printf "%s:%s" $image .tag -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Create the name of the webhook service.
 */}}

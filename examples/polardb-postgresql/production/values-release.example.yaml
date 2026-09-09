@@ -1,0 +1,27 @@
+# Copy this file into the release record and replace every digest with the
+# value emitted by the release workflow. Do not deploy production with tags.
+image:
+  registry: ghcr.io/wallyxjh
+  repository: kubeblocks
+  digest: sha256:REPLACE_MANAGER_DIGEST
+  tools:
+    repository: kubeblocks-tools
+    digest: sha256:REPLACE_TOOLS_DIGEST
+  datascript:
+    repository: kubeblocks-datascript
+    digest: sha256:REPLACE_DATASCRIPT_DIGEST
+
+dataProtection:
+  image:
+    registry: ghcr.io/wallyxjh
+    repository: kubeblocks-dataprotection
+    digest: sha256:REPLACE_DATAPROTECTION_DIGEST
+    datasafed:
+      registry: apecloud-registry.cn-zhangjiakou.cr.aliyuncs.com
+      repository: apecloud/datasafed
+      digest: sha256:REPLACE_APPROVED_DATASAFED_DIGEST
+
+addonChartsImage:
+  registry: ghcr.io/wallyxjh
+  repository: kubeblocks-addon-charts
+  digest: sha256:REPLACE_ADDON_CHARTS_DIGEST

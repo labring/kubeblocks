@@ -984,6 +984,7 @@ type Action struct {
 // - `postgresql`
 // - `official-postgresql`
 // - `apecloud-postgresql`
+// - `polardb-postgresql`
 // - `polardbx`
 // - `custom`
 // - `unknown`
@@ -999,6 +1000,7 @@ const (
 	PostgresqlBuiltinActionHandler         BuiltinActionHandlerType = "postgresql"
 	OfficialPostgresqlBuiltinActionHandler BuiltinActionHandlerType = "official-postgresql"
 	ApeCloudPostgresqlBuiltinActionHandler BuiltinActionHandlerType = "apecloud-postgresql"
+	PolarDBPostgresqlBuiltinActionHandler  BuiltinActionHandlerType = "polardb-postgresql"
 	PolarDBXBuiltinActionHandler           BuiltinActionHandlerType = "polardbx"
 	CustomActionHandler                    BuiltinActionHandlerType = "custom"
 	UnknownBuiltinActionHandler            BuiltinActionHandlerType = "unknown"
@@ -1015,7 +1017,7 @@ type LifecycleActionHandler struct {
 	// Lorry, as a sidecar agent co-located with the database container in the same Pod,
 	// includes a suite of built-in action implementations that are tailored to different database engines.
 	// These are known as "builtin" handlers, includes: `mysql`, `redis`, `mongodb`, `etcd`,
-	// `postgresql`, `official-postgresql`, `apecloud-postgresql`, `wesql`, `oceanbase`, `polardbx`.
+	// `postgresql`, `official-postgresql`, `apecloud-postgresql`, `polardb-postgresql`, `wesql`, `oceanbase`, `polardbx`.
 	//
 	// If the `builtinHandler` field is specified, it instructs Lorry to utilize its internal built-in action handler
 	// to execute the specified lifecycle actions.

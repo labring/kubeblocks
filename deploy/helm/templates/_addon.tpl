@@ -3,7 +3,7 @@ Define addon Helm charts image information.
 */}}
 {{- define "kubeblocks.addonChartsImage" }}
 {{- $addonImageRegistry := include "kubeblocks.imageRegistry" . }}
-chartsImage: {{ .Values.addonChartsImage.registry | default $addonImageRegistry }}/{{ .Values.addonChartsImage.repository }}:{{ .Values.addonChartsImage.tag | default .Chart.AppVersion }}
+chartsImage: {{ include "kubeblocks.image" (dict "registry" (.Values.addonChartsImage.registry | default $addonImageRegistry) "repository" .Values.addonChartsImage.repository "tag" (default .Chart.AppVersion .Values.addonChartsImage.tag) "digest" .Values.addonChartsImage.digest) }}
 chartsPathInImage: {{ .Values.addonChartsImage.chartsPath }}
 {{- end }}
 
@@ -104,7 +104,7 @@ spec:
   type: Helm
   helm:
     {{- include "kubeblocks.addonChartLocationURL" ( dict "name" .name "version" .version "values" .Values) | indent 4 }}
-    chartsImage: {{ .Values.addonChartsImage.registry | default $addonImageRegistry }}/{{ .Values.addonChartsImage.repository }}:{{ .Values.addonChartsImage.tag | default .Chart.AppVersion }}
+    chartsImage: {{ include "kubeblocks.image" (dict "registry" (.Values.addonChartsImage.registry | default $addonImageRegistry) "repository" .Values.addonChartsImage.repository "tag" (default .Chart.AppVersion .Values.addonChartsImage.tag) "digest" .Values.addonChartsImage.digest) }}
     chartsPathInImage: {{ .Values.addonChartsImage.chartsPath }}
     {{- include "kubeblocks.addonHelmInstallOptions" ( dict "version" .version "values" .Values) | indent 4 }}
     {{- if and (eq .name "pulsar") (eq $cloudProvider "huaweiCloud") }}

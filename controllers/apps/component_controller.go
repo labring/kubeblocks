@@ -22,6 +22,7 @@ package apps
 import (
 	"context"
 	"reflect"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
@@ -50,11 +53,48 @@ import (
 	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
+var componentReconcileEventCh = make(chan event.GenericEvent, 1024)
+
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+}
+
+type componentReconcileEventHandler struct{}
+
+var _ handler.EventHandler = &componentReconcileEventHandler{}
+
+func (h *componentReconcileEventHandler) Create(ctx context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+	h.enqueue(ctx, evt.Object, q, "create")
+}
+
+func (h *componentReconcileEventHandler) Update(ctx context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+	h.enqueue(ctx, evt.ObjectNew, q, "update")
+}
+
+func (h *componentReconcileEventHandler) Delete(ctx context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+	h.enqueue(ctx, evt.Object, q, "delete")
+}
+
+func (h *componentReconcileEventHandler) Generic(ctx context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+	h.enqueue(ctx, evt.Object, q, "generic")
+}
+
+func (h *componentReconcileEventHandler) enqueue(ctx context.Context, obj client.Object, q workqueue.RateLimitingInterface, eventType string) {
+	if obj == nil {
+		log.FromContext(ctx).Error(nil, "component reconcile event received with no object", "eventType", eventType)
+		return
+	}
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: obj.GetNamespace(),
+			Name:      obj.GetName(),
+		},
+	}
+	log.FromContext(ctx).V(1).Info("component reconcile event handled", "component", req.NamespacedName, "eventType", eventType)
+	q.Add(req)
 }
 
 // +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=components,verbs=get;list;watch;create;update;patch;delete
@@ -99,6 +139,10 @@ type ComponentReconciler struct {
 
 // read only + watch access
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+
+// component-owned disruption budgets
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;update;patch;delete;deletecollection
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets/finalizers,verbs=update
 
 // +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=componentresourceconstraints,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=configconstraints,verbs=get;list;watch
@@ -208,6 +252,9 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if errBuild != nil {
 		return requeueError(errBuild)
 	}
+	if c, ok := planBuilder.(*componentPlanBuilder); ok && shouldRequeuePendingPolarDBPostgreSQLComponent(c.transCtx.Component) {
+		return intctrlutil.RequeueAfter(requeueDuration, reqCtx.Log, "wait PolarDB PostgreSQL component status")
+	}
 	return intctrlutil.Reconciled()
 }
 
@@ -229,7 +276,10 @@ func (r *ComponentReconciler) setupWithManager(mgr ctrl.Manager) error {
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: viper.GetInt(constant.CfgKBReconcileWorkers),
 		}).
+		WatchesRawSource(&source.Channel{Source: componentReconcileEventCh}, &componentReconcileEventHandler{}).
+		Watches(&appsv1alpha1.Cluster{}, handler.EnqueueRequestsFromMapFunc(r.clusterEventHandler)).
 		Owns(&workloads.InstanceSet{}).
+		Watches(&workloads.InstanceSet{}, handler.EnqueueRequestsFromMapFunc(r.polarDBPostgreSQLWorkloadEventHandler)).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
@@ -261,7 +311,10 @@ func (r *ComponentReconciler) setupWithMultiClusterManager(mgr ctrl.Manager, mul
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: viper.GetInt(constant.CfgKBReconcileWorkers),
 		}).
+		WatchesRawSource(&source.Channel{Source: componentReconcileEventCh}, &componentReconcileEventHandler{}).
+		Watches(&appsv1alpha1.Cluster{}, handler.EnqueueRequestsFromMapFunc(r.clusterEventHandler)).
 		Owns(&workloads.InstanceSet{}).
+		Watches(&workloads.InstanceSet{}, handler.EnqueueRequestsFromMapFunc(r.polarDBPostgreSQLWorkloadEventHandler)).
 		Owns(&dpv1alpha1.Backup{}).
 		Owns(&dpv1alpha1.Restore{}).
 		Watches(&appsv1alpha1.Configuration{}, handler.EnqueueRequestsFromMapFunc(r.configurationEventHandler))
@@ -336,6 +389,92 @@ func (r *ComponentReconciler) filterComponentResources(ctx context.Context, obj 
 			},
 		},
 	}
+}
+
+func (r *ComponentReconciler) polarDBPostgreSQLWorkloadEventHandler(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj == nil || obj.GetDeletionTimestamp() != nil {
+		return nil
+	}
+	labels := obj.GetLabels()
+	if !isPolarDBPostgreSQLCompDef(labels[constant.ComponentDefinitionLabelKey]) &&
+		!isPolarDBPostgreSQLCompDef(labels[constant.AppComponentLabelKey]) {
+		return nil
+	}
+	return r.filterComponentResources(ctx, obj)
+}
+
+func enqueueComponentReconcileEvent(obj client.Object) bool {
+	if obj == nil {
+		return false
+	}
+	objCopy, ok := obj.DeepCopyObject().(client.Object)
+	if !ok {
+		return false
+	}
+	select {
+	case componentReconcileEventCh <- event.GenericEvent{Object: objCopy}:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPolarDBPostgreSQLCompDef(compDef string) bool {
+	return strings.Contains(compDef, string(appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler))
+}
+
+func isPolarDBPostgreSQLComponent(comp *appsv1alpha1.Component) bool {
+	if comp == nil {
+		return false
+	}
+	if isPolarDBPostgreSQLCompDef(comp.Spec.CompDef) {
+		return true
+	}
+	return isPolarDBPostgreSQLCompDef(comp.GetLabels()[constant.ComponentDefinitionLabelKey])
+}
+
+func shouldRequeuePendingPolarDBPostgreSQLComponent(comp *appsv1alpha1.Component) bool {
+	if !isPolarDBPostgreSQLComponent(comp) || comp.GetDeletionTimestamp() != nil {
+		return false
+	}
+	switch comp.Status.Phase {
+	case appsv1alpha1.RunningClusterCompPhase,
+		appsv1alpha1.StoppedClusterCompPhase,
+		appsv1alpha1.FailedClusterCompPhase,
+		appsv1alpha1.AbnormalClusterCompPhase,
+		appsv1alpha1.DeletingClusterCompPhase:
+		return false
+	default:
+		return true
+	}
+}
+
+func (r *ComponentReconciler) clusterEventHandler(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj == nil || obj.GetDeletionTimestamp() != nil {
+		return nil
+	}
+
+	cluster, ok := obj.(*appsv1alpha1.Cluster)
+	if !ok {
+		cluster = &appsv1alpha1.Cluster{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}, cluster); err != nil {
+			return nil
+		}
+	}
+
+	requests := make([]reconcile.Request, 0, len(cluster.Spec.ComponentSpecs))
+	for _, compSpec := range cluster.Spec.ComponentSpecs {
+		if compSpec.Name == "" || !isPolarDBPostgreSQLCompDef(compSpec.ComponentDef) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: cluster.Namespace,
+				Name:      constant.GenerateClusterComponentName(cluster.Name, compSpec.Name),
+			},
+		})
+	}
+	return requests
 }
 
 func (r *ComponentReconciler) configurationEventHandler(_ context.Context, obj client.Object) []reconcile.Request {

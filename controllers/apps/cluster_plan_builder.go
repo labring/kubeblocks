@@ -23,6 +23,8 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	snapshotv1beta1 "github.com/kubernetes-csi/external-snapshotter/client/v3/apis/volumesnapshot/v1beta1"
@@ -37,6 +39,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	appsv1beta1 "github.com/apecloud/kubeblocks/apis/apps/v1beta1"
@@ -56,6 +59,8 @@ const (
 	workloadWeight
 	clusterWeight
 )
+
+var directComponentReconcileInFlight sync.Map
 
 // clusterTransformContext a graph.TransformContext implementation for Cluster reconciliation
 type clusterTransformContext struct {
@@ -242,6 +247,7 @@ func (c *clusterPlanBuilder) defaultWalkFuncWithLogging(vertex graph.Vertex) err
 	err := c.defaultWalkFunc(vertex)
 	switch {
 	case err == nil:
+		c.enqueueComponentReconcileEvent(node)
 		return err
 	case !ok:
 		c.transCtx.Logger.Error(err, "")
@@ -253,6 +259,92 @@ func (c *clusterPlanBuilder) defaultWalkFuncWithLogging(vertex graph.Vertex) err
 		c.transCtx.Logger.Error(err, fmt.Sprintf("%s %T error", *node.Action, node.Obj))
 	}
 	return err
+}
+
+func (c *clusterPlanBuilder) enqueueComponentReconcileEvent(node *model.ObjectVertex) {
+	if node == nil || node.Action == nil {
+		return
+	}
+	if *node.Action != model.CREATE && *node.Action != model.UPDATE && *node.Action != model.PATCH {
+		return
+	}
+	comp, ok := node.Obj.(*appsv1alpha1.Component)
+	if !ok {
+		return
+	}
+	if !enqueueComponentReconcileEvent(comp) {
+		c.transCtx.Logger.V(1).Info("component reconcile event channel is full", "component", client.ObjectKeyFromObject(comp))
+	}
+	c.transCtx.Logger.V(1).Info("enqueued component reconcile event", "component", client.ObjectKeyFromObject(comp), "action", *node.Action)
+	// The direct retry is specific to the PolarDB PostgreSQL builtin handler.
+	if !isPolarDBPostgreSQLComponent(comp) {
+		return
+	}
+	c.triggerComponentReconcile(comp)
+}
+
+func (c *clusterPlanBuilder) triggerComponentReconcile(comp *appsv1alpha1.Component) {
+	key := client.ObjectKeyFromObject(comp)
+	if key.Name == "" {
+		return
+	}
+	keyString := key.String()
+	if _, loaded := directComponentReconcileInFlight.LoadOrStore(keyString, struct{}{}); loaded {
+		return
+	}
+
+	cli := c.cli
+	recorder := c.transCtx.EventRecorder
+	logger := c.transCtx.Logger.WithValues("component", key, "trigger", "cluster-plan")
+	go func() {
+		defer directComponentReconcileInFlight.Delete(keyString)
+
+		reconciler := &ComponentReconciler{
+			Client:   cli,
+			Recorder: recorder,
+		}
+		req := ctrl.Request{NamespacedName: key}
+		nextDelay := time.Second
+		for attempt := 1; attempt <= 5; attempt++ {
+			timer := time.NewTimer(nextDelay)
+			<-timer.C
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx = ctrlLog.IntoContext(ctx, logger)
+			current := &appsv1alpha1.Component{}
+			if err := cli.Get(ctx, key, current); err != nil {
+				cancel()
+				if apierrors.IsNotFound(err) {
+					nextDelay = time.Second
+					continue
+				}
+				logger.Error(err, "failed to read component before direct reconcile", "attempt", attempt)
+				return
+			}
+
+			result, err := reconciler.Reconcile(ctx, req)
+			cancel()
+			if err != nil {
+				logger.Error(err, "direct component reconcile failed", "attempt", attempt)
+				nextDelay = time.Second
+				continue
+			}
+			if result.Requeue || result.RequeueAfter > 0 {
+				if result.RequeueAfter > 0 {
+					nextDelay = result.RequeueAfter
+				} else {
+					nextDelay = time.Second
+				}
+				if nextDelay > 5*time.Second {
+					nextDelay = 5 * time.Second
+				}
+				logger.V(1).Info("direct component reconcile requested requeue", "attempt", attempt, "delay", nextDelay)
+				continue
+			}
+			logger.V(1).Info("direct component reconcile completed", "attempt", attempt)
+			return
+		}
+	}()
 }
 
 func (c *clusterPlanBuilder) defaultWalkFunc(vertex graph.Vertex) error {

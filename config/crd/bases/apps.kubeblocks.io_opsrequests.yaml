@@ -3997,9 +3997,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - componentName
                 x-kubernetes-list-type: map
-                x-kubernetes-validations:
-                - message: forbidden to update spec.rebuildFrom
-                  rule: self == oldSelf
               reconfigure:
                 description: |-
                   Specifies a component and its configuration updates.

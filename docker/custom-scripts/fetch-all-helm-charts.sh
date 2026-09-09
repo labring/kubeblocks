@@ -18,6 +18,21 @@ GITHUB_HELM_CHARTS_URL=https://github.com/apecloud/helm-charts/releases/download
 
 ADDON_DIR="kubeblocks/templates/addons"
 APP_DIR="kubeblocks/templates/applications"
+LOCAL_ADDON_DIR="$(cd "${KB_CHART_DIR}/../addons" 2>/dev/null && pwd || true)"
+
+package_local_charts() {
+  if [ -z "${LOCAL_ADDON_DIR}" ] || [ ! -d "${LOCAL_ADDON_DIR}" ]; then
+    return
+  fi
+
+  for chart in "${LOCAL_ADDON_DIR}"/*; do
+    if [ ! -f "${chart}/Chart.yaml" ]; then
+      continue
+    fi
+    echo "packaging local addon chart ${chart}"
+    helm package "${chart}" -d "${TARGET_DIR}"
+  done
+}
 
 # fetch helm charts to target directory
 # parameters:
@@ -45,6 +60,11 @@ fetch_helm_charts() {
 
     # fetch the helm chart
     echo "fetching helm chart from ${chartURL}"
+    chartName="$(basename "${chartURL}")"
+    if [ -f "${TARGET_DIR}/${chartName}" ]; then
+      echo "helm chart ${chartName} already exists in ${TARGET_DIR}, skip fetching"
+      continue
+    fi
     helm fetch "$chartURL" -d "${TARGET_DIR}"
   done
 }
@@ -55,6 +75,8 @@ mkdir -p "${MANIFESTS_DIR}"
 
 # get all manifests
 helm version
+
+package_local_charts
 
 echo "fetch addons helm charts, addon CRs directory: ${ADDON_DIR}, helm chart url: ${GITHUB_HELM_CHARTS_URL}"
 fetch_helm_charts "${GITHUB_HELM_CHARTS_URL}" "${ADDON_DIR}"

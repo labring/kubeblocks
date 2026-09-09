@@ -1,0 +1,39 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "backup-policy-template" "Values" .Values) }}
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPostgresql.componentDefinitionName" . }}: {{ include "polardbPostgresql.componentDefinitionName" . }}
+    service-kind/postgresql: "true"
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  backupPolicies:
+  - componentDefs:
+    - {{ include "polardbPostgresql.componentDefinitionName" . }}
+    target:
+      account: postgres
+      fallbackRole: primary
+      role: secondary
+    backupMethods:
+    - name: pg-basebackup
+      actionSetName: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "basebackup" "Values" .Values) }}
+      snapshotVolumes: false
+      envMapping:
+      - key: POSTGRESQL_IMAGE
+        valueFrom:
+          componentDef:
+          - names:
+            - {{ include "polardbPostgresql.componentDefinitionName" . }}
+            mappingValue: {{ include "postgresql.image.major12.minor150" . | quote }}
+      targetVolumes:
+        volumeMounts:
+        - name: data
+          mountPath: {{ .Values.dataMountPath }}
+    schedules:
+    - backupMethod: pg-basebackup
+      cronExpression: {{ .Values.backup.schedule.cronExpression | quote }}
+      enabled: {{ .Values.backup.schedule.enabled }}
+      retentionPeriod: {{ .Values.backup.schedule.retentionPeriod | quote }}

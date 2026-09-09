@@ -1,0 +1,57 @@
+# API-contract test only. The zero-replica control component does not create a
+# database Pod. It gives Custom Ops an auditable KubeBlocks Cluster endpoint.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polardb-stack-contract-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-contract-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-contract-test
+rules:
+  - apiGroups: [apps.kubeblocks.io]
+    resources: [clusters]
+    verbs: [get]
+  - apiGroups: [mpd.polardb.aliyun.com]
+    resources: [mpdclusters]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-contract-test
+subjects:
+  - kind: ServiceAccount
+    name: polardb-pg-stack-ops
+    namespace: polardb-stack-contract-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: polardb-pg-stack-ops
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-stack-contract-test
+  namespace: polardb-stack-contract-test
+  annotations:
+    polardb-pg.kubeblocks.io/mpdcluster: polardb-stack-contract-test
+    polardb-pg.kubeblocks.io/mpdcluster-namespace: polardb-stack-contract-test
+    polardb-pg.kubeblocks.io/control-plane: contract-test-only
+spec:
+  terminationPolicy: Delete
+  componentSpecs:
+    - name: control
+      componentDef: polardb-pg-stack-control-v2
+      replicas: 0
+      disableExporter: true
+      serviceAccountName: polardb-pg-stack-ops

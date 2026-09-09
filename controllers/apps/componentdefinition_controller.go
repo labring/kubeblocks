@@ -421,10 +421,10 @@ func (r *ComponentDefinitionReconciler) validateLifecycleActionBuiltInHandlers(l
 
 	for _, action := range actions {
 		if action.LifeCycleActionHandlers != nil && action.LifeCycleActionHandlers.BuiltinHandler != nil {
-			if !slices.Contains(supportedBuiltInHandlers, *lifecycleActions.RoleProbe.BuiltinHandler) {
-				return fmt.Errorf("the builtin handler %s is not supported", *lifecycleActions.RoleProbe.BuiltinHandler)
+			if !slices.Contains(supportedBuiltInHandlers, *action.LifeCycleActionHandlers.BuiltinHandler) {
+				return fmt.Errorf("the builtin handler %s is not supported", *action.LifeCycleActionHandlers.BuiltinHandler)
 			}
-			builtInHandlerMap[*lifecycleActions.RoleProbe.BuiltinHandler] = true
+			builtInHandlerMap[*action.LifeCycleActionHandlers.BuiltinHandler] = true
 		}
 	}
 
@@ -575,6 +575,7 @@ func getBuiltinActionHandlers() []appsv1alpha1.BuiltinActionHandlerType {
 		appsv1alpha1.PostgresqlBuiltinActionHandler,
 		appsv1alpha1.OfficialPostgresqlBuiltinActionHandler,
 		appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler,
+		appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler,
 		appsv1alpha1.PolarDBXBuiltinActionHandler,
 		appsv1alpha1.CustomActionHandler,
 	}

@@ -49,7 +49,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers: # only download tools image to local
         - name: tools
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.tools.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -109,7 +109,7 @@ spec:
             - name: KUBEBLOCKS_IMAGE_PULL_SECRETS
               value: {{ .Values.dataProtection.image.imagePullSecrets | toJson | quote }}
             - name: KUBEBLOCKS_TOOLS_IMAGE
-              value: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              value: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.tools.digest) }}"
             - name: KUBEBLOCKS_SERVICEACCOUNT_NAME
               value: {{ include "kubeblocks.serviceAccountName" . }}
             {{- if .Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1" }}
@@ -140,7 +140,7 @@ spec:
                 secretKeyRef:
                   {{- include "dataprotection.encryptionKeySecretKeyRef" . | nindent 18 }}
             - name: DATASAFED_IMAGE
-              value: "{{ .Values.dataProtection.image.registry | default $dataProtectionImageRegistry }}/{{ .Values.dataProtection.image.datasafed.repository }}:{{ .Values.dataProtection.image.datasafed.tag | default "latest" }}"
+              value: "{{ include "kubeblocks.image" (dict "registry" (.Values.dataProtection.image.datasafed.registry | default (.Values.dataProtection.image.registry | default $dataProtectionImageRegistry)) "repository" .Values.dataProtection.image.datasafed.repository "tag" (default "latest" .Values.dataProtection.image.datasafed.tag) "digest" .Values.dataProtection.image.datasafed.digest) }}"
             - name: GC_FREQUENCY_SECONDS
               value: "{{ .Values.dataProtection.gcFrequencySeconds }}"
             - name: WORKER_SERVICE_ACCOUNT_NAME
@@ -158,7 +158,7 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          image: "{{ .Values.dataProtection.image.registry | default $dataProtectionImageRegistry }}/{{ .Values.dataProtection.image.repository }}:{{ .Values.dataProtection.image.tag | default .Chart.AppVersion }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" (.Values.dataProtection.image.registry | default $dataProtectionImageRegistry) "repository" .Values.dataProtection.image.repository "tag" (default .Chart.AppVersion .Values.dataProtection.image.tag) "digest" .Values.dataProtection.image.digest) }}"
           imagePullPolicy: {{ .Values.dataProtection.image.pullPolicy }}
           ports:
             - name: webhook-server

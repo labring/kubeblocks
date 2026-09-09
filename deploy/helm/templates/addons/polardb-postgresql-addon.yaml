@@ -1,0 +1,12 @@
+{{- if has "polardb-postgresql" .Values.autoInstalledAddons  }}
+{{- $selectorLabels := include "kubeblocks.selectorLabels" . }}
+{{- include "kubeblocks.buildAddonCR" (merge (dict
+  "kbVersion" ">=0.9.0 <1.0.0"
+  "selectorLabels" $selectorLabels
+  "name" "polardb-postgresql"
+  "version" "0.9.3"
+  "model" "RDBMS"
+  "provider" "community"
+  "description" "PolarDB for PostgreSQL is a PostgreSQL-compatible database engine. This addon wires the Patroni-based HA component into KubeBlocks 0.9 native Ops for switchover, fencing, rejoin, rebuild, backup and restore drills."
+  "autoInstall" false) . ) -}}
+{{- end }}

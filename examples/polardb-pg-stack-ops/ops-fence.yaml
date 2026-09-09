@@ -1,0 +1,19 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-fence
+  namespace: polardb-stack-demo
+spec:
+  clusterName: polardb-stack-demo
+  type: Custom
+  timeoutSeconds: 1800
+  custom:
+    opsDefinitionName: polardb-pg-stack-fence
+    serviceAccountName: polardb-pg-stack-ops
+    components:
+      - componentName: control
+        parameters:
+          - name: TARGET_INSTANCE
+            value: REPLACE_INSTANCE_ID
+          - name: FENCE_REASON
+            value: node network partition confirmed

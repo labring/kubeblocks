@@ -1,0 +1,37 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: polardb-postgresql-backup-policy-template
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+  labels:
+    polardb-postgresql-ha-v1: polardb-postgresql-ha-v1
+    service-kind/postgresql: "true"
+spec:
+  backupPolicies:
+  - componentDefs:
+    - polardb-postgresql-ha-v1
+    target:
+      account: postgres
+      fallbackRole: primary
+      role: secondary
+    backupMethods:
+    - name: pg-basebackup
+      actionSetName: postgres-basebackup
+      snapshotVolumes: false
+      envMapping:
+      - key: IMAGE_TAG
+        valueFrom:
+          componentDef:
+          - names:
+            - polardb-postgresql-ha-v1
+            mappingValue: 12.15.0-pgvector-v0.6.1
+      targetVolumes:
+        volumeMounts:
+        - name: data
+          mountPath: /home/postgres/pgdata
+    schedules:
+    - backupMethod: pg-basebackup
+      cronExpression: 0 18 * * *
+      enabled: false
+      retentionPeriod: 7d

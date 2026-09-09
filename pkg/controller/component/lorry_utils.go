@@ -237,11 +237,12 @@ func buildLorryInitContainer() *corev1.Container {
 }
 
 func buildLorryEnvs(container *corev1.Container, synthesizeComp *SynthesizedComponent, clusterCompSpec *appsv1alpha1.ClusterComponentSpec) {
+	builtinHandler := getBuiltinActionHandler(synthesizeComp)
 	envs := []corev1.EnvVar{
 		// inject the default built-in handler env to lorry container.
 		{
 			Name:      constant.KBEnvBuiltinHandler,
-			Value:     string(getBuiltinActionHandler(synthesizeComp)),
+			Value:     string(builtinHandler),
 			ValueFrom: nil,
 		},
 	}
@@ -281,6 +282,10 @@ func buildLorryEnvs(container *corev1.Container, synthesizeComp *SynthesizedComp
 		}
 	}
 
+	if builtinHandler == appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler {
+		envs = appendPolarDBPostgreSQLHAEnv(envs, mainContainer)
+	}
+
 	// pass the volume protection spec to lorry container through env.
 	// TODO(xingran & leon):  volume protection should be based on componentDefinition.Spec.Volume
 	if volumeProtectionEnabled(synthesizeComp) {
@@ -289,6 +294,34 @@ func buildLorryEnvs(container *corev1.Container, synthesizeComp *SynthesizedComp
 	envs = append(envs, buildEnv4CronJobs(synthesizeComp)...)
 
 	container.Env = append(container.Env, envs...)
+}
+
+func appendPolarDBPostgreSQLHAEnv(envs []corev1.EnvVar, mainContainer *corev1.Container) []corev1.EnvVar {
+	if envVarExists(envs, constant.KBEnvEnableHA) {
+		return envs
+	}
+	if mainContainer != nil {
+		if env := getEnvVarByName(mainContainer.Env, constant.KBEnvEnableHA); env != nil {
+			return append(envs, *env)
+		}
+	}
+	return append(envs, corev1.EnvVar{
+		Name:  constant.KBEnvEnableHA,
+		Value: "false",
+	})
+}
+
+func getEnvVarByName(envs []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range envs {
+		if envs[i].Name == name {
+			return &envs[i]
+		}
+	}
+	return nil
+}
+
+func envVarExists(envs []corev1.EnvVar, name string) bool {
+	return getEnvVarByName(envs, name) != nil
 }
 
 func buildRoleProbeContainer(roleChangedContainer *corev1.Container, roleProbe *appsv1alpha1.RoleProbe, probeSvcHTTPPort int) {

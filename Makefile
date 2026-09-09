@@ -220,22 +220,22 @@ endif
 OUTPUT_COVERAGE=-coverprofile cover.out.tmp && grep -v "zz_generated.deepcopy.go" cover.out.tmp > cover.out && rm cover.out.tmp
 .PHONY: test-current-ctx
 test-current-ctx: manifests generate add-k8s-host ## Run operator controller tests with current $KUBECONFIG context. if existing k8s cluster is k3d or minikube, specify EXISTING_CLUSTER_TYPE.
-	USE_EXISTING_CLUSTER=true KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -p 1 $(TEST_PACKAGES) $(OUTPUT_COVERAGE)
+	USE_EXISTING_CLUSTER=true KUBEBUILDER_ASSETS="$$($(ENVTEST) $(ENVTEST_ARGS) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -p 1 $(TEST_PACKAGES) $(OUTPUT_COVERAGE)
 
 .PHONY: test-fast
 test-fast: envtest
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -short $(TEST_PACKAGES)  $(OUTPUT_COVERAGE)
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) $(ENVTEST_ARGS) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -short $(TEST_PACKAGES)  $(OUTPUT_COVERAGE)
 
 .PHONY: test
 test: manifests generate test-go-generate add-k8s-host test-fast ## Run tests. if existing k8s cluster is k3d or minikube, specify EXISTING_CLUSTER_TYPE.
 
 .PHONY: race
 race:
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -race $(TEST_PACKAGES)
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) $(ENVTEST_ARGS) use $(ENVTEST_K8S_VERSION) -p path)" $(GO) test -race $(TEST_PACKAGES)
 
 .PHONY: test-delve
 test-delve: manifests generate envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" dlv --listen=:$(DEBUG_PORT) --headless=true --api-version=2 --accept-multiclient test $(TEST_PACKAGES)
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) $(ENVTEST_ARGS) use $(ENVTEST_K8S_VERSION) -p path)" dlv --listen=:$(DEBUG_PORT) --headless=true --api-version=2 --accept-multiclient test $(TEST_PACKAGES)
 
 .PHONY: test-webhook-enabled
 test-webhook-enabled: ## Run tests with webhooks enabled.
@@ -397,6 +397,8 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.1.1
 CONTROLLER_TOOLS_VERSION ?= v0.14.0
+ENVTEST_VERSION ?= v0.0.0-20240812162837-9557f1031fe4
+ENVTEST_ARGS ?= --use-deprecated-gcs=false
 CUE_VERSION ?= v0.4.3
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "$(GITHUB_PROXY)https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
@@ -422,7 +424,7 @@ controller-gen: $(LOCALBIN) ## Download controller-gen locally if necessary.
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 ifeq (, $(shell ls $(LOCALBIN)/setup-envtest 2>/dev/null))
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20240320141353-395cfc7486e6
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 endif
 
 .PHONY: install-docker-buildx
@@ -453,18 +455,16 @@ else
 GOLANGCILINT=$(GOBIN)/golangci-lint
 endif
 
+STATICCHECK_VERSION ?= v0.4.7
+STATICCHECK = $(GOBIN)/staticcheck
+
 .PHONY: staticchecktool
-staticchecktool: ## Download staticcheck locally if necessary.
-ifeq (, $(shell which staticcheck))
-	@{ \
-	set -e ;\
-	echo 'installing honnef.co/go/tools/cmd/staticcheck' ;\
-	go install honnef.co/go/tools/cmd/staticcheck@latest;\
-	}
-STATICCHECK=$(GOBIN)/staticcheck
-else
-STATICCHECK=$(shell which staticcheck)
-endif
+staticchecktool: ## Download the pinned staticcheck version if necessary.
+	@if ! test -x "$(STATICCHECK)" || ! "$(STATICCHECK)" -version | grep -Fq "$(STATICCHECK_VERSION)"; then \
+		set -e; \
+		echo 'installing honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)'; \
+		$(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION); \
+	fi
 
 .PHONY: goimportstool
 goimportstool: ## Download goimports locally if necessary.
@@ -517,6 +517,18 @@ endif
 KUBECTL=$(shell which kubectl)
 
 ##@ End-to-end (E2E) tests
+.PHONY: test-polardb-postgresql-ha
+test-polardb-postgresql-ha: helmtool kubectl ## Run PolarDB PostgreSQL HA drill on the current kube context.
+	bash test/e2e/polardb-postgresql-ha.sh
+
+.PHONY: test-polardb-postgresql-production-manifests
+test-polardb-postgresql-production-manifests: helmtool ## Validate PolarDB PostgreSQL production image locks and fencing safeguards.
+	bash test/e2e/polardb-postgresql-production-manifests.sh
+
+.PHONY: verify-polardb-pg-local-engine
+verify-polardb-pg-local-engine: kubectl ## Verify that a running KubeBlocks Cluster uses the real PolarDB-PG engine.
+	bash examples/polardb-pg/scripts/verify-local-engine.sh
+
 .PHONY: render-smoke-testdata-manifests
 render-smoke-testdata-manifests: addonsPath=addons/addons
 render-smoke-testdata-manifests: fetch-addons ## Update E2E test dataset

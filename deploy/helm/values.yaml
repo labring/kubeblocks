@@ -9,6 +9,7 @@ versionOverride:
 ## @param image.repository KubeBlocks image repository
 ## @param image.pullPolicy KubeBlocks image pull policy
 ## @param image.tag KubeBlocks image tag (immutable tags are recommended)
+## @param image.digest KubeBlocks manager image digest; overrides image.tag when set
 ## @param image.imagePullSecrets KubeBlocks image pull secrets
 ## @param image.tools.repository KubeBlocks tools image repository
 image:
@@ -17,11 +18,17 @@ image:
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
+  # Pins the manager image by content when set.
+  digest: ""
   imagePullSecrets: []
   tools:
     repository: apecloud/kubeblocks-tools
+    # Pins the tools image independently when set.
+    digest: ""
   datascript:
     repository: apecloud/kubeblocks-datascript
+    # Pins the datascript image independently when set.
+    digest: ""
 
 ## @param replicaCount
 ##
@@ -367,10 +374,17 @@ dataProtection:
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     tag: ""
+    # Pins the data protection controller image by content when set.
+    digest: ""
     imagePullSecrets: []
     datasafed:
+      # Defaults to dataProtection.image.registry when empty. Set this
+      # independently when datasafed is approved from another registry.
+      registry: ""
       repository: apecloud/datasafed
       tag: "0.2.0"
+      # Pin this external backup dependency independently in production.
+      digest: ""
   ## @param toleration
   tolerations:
   - key: kb-controller
@@ -459,6 +473,8 @@ addonChartsImage:
   repository: apecloud/kubeblocks-charts
   pullPolicy: IfNotPresent
   tag: ""
+  # Pins the addon charts image by content when set.
+  digest: ""
   chartsPath: /charts
   pullSecrets: []
 
@@ -481,6 +497,7 @@ autoInstalledAddons:
   - "llm"
   - "mongodb"
   - "mysql"
+  - "polardb-postgresql"
   - "postgresql"
   - "pulsar"
   - "qdrant"

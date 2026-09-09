@@ -1,0 +1,10 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Backup
+metadata:
+  name: polardb-pg-local-basebackup
+  namespace: polardb-pg-real
+spec:
+  backupPolicyName: polardb-pg-real-polardb-backup-policy
+  backupMethod: polar-pg-basebackup
+  deletionPolicy: Retain
+  retentionPeriod: 7d

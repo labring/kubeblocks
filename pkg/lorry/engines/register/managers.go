@@ -69,6 +69,8 @@ func init() {
 	RegisterEngine(models.PolarDBX, "consensus", polardbx.NewManager, mysql.NewCommands)
 	RegisterEngine(models.PostgreSQL, "replication", officalpostgres.NewManager, postgres.NewCommands)
 	RegisterEngine(models.PostgreSQL, "consensus", apecloudpostgres.NewManager, postgres.NewCommands)
+	RegisterEngine(models.PolarDBPostgreSQL, "replication", officalpostgres.NewManager, postgres.NewCommands)
+	RegisterEngine(models.PolarDBPostgreSQL, "", officalpostgres.NewManager, postgres.NewCommands)
 	RegisterEngine(models.FoxLake, "", nil, foxlake.NewCommands)
 	RegisterEngine(models.Nebula, "", nil, nebula.NewCommands)
 	RegisterEngine(models.PulsarProxy, "", nil, pulsar.NewProxyCommands)

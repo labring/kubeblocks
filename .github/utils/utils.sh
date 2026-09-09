@@ -505,6 +505,11 @@ get_trigger_mode() {
             deploy/*)
                 add_trigger_mode "[deploy]"
             ;;
+            .github/workflows/cicd-push.yml)
+                # The full test gate is defined here. Changes to its runner or
+                # commands must exercise the gate instead of being skipped.
+                add_trigger_mode "[test]"
+            ;;
             .github/*|.devcontainer/*|githooks/*|examples/*)
                 add_trigger_mode "[other]"
             ;;

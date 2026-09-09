@@ -1,0 +1,378 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: polardb-mongo-documentdb
+spec:
+  provider: kubeblocks.io
+  description: DocumentDB-compatible PostgreSQL backend for the PolarDB MongoDB-compatible option.
+  serviceKind: documentdb
+  serviceVersion: "17.0.0"
+  replicasLimit:
+    minReplicas: 1
+    maxReplicas: 1
+  systemAccounts:
+  - name: ferretdb
+    initAccount: true
+    passwordGenerationPolicy:
+      length: 16
+      numDigits: 8
+      numSymbols: 0
+      letterCase: MixedCases
+  vars:
+  - name: POSTGRES_USER
+    valueFrom:
+      credentialVarRef:
+        name: ferretdb
+        optional: false
+        username: Required
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      credentialVarRef:
+        name: ferretdb
+        optional: false
+        password: Required
+  volumes:
+  - name: data
+    needSnapshot: true
+  services:
+  - name: default
+    spec:
+      ports:
+      - name: postgres
+        port: 5432
+        targetPort: postgres
+  runtime:
+    containers:
+    - name: postgres
+      image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+      imagePullPolicy: IfNotPresent
+      ports:
+      - containerPort: 5432
+        name: postgres
+      env:
+      - name: POSTGRES_USER
+        value: $(POSTGRES_USER)
+      - name: POSTGRES_PASSWORD
+        value: $(POSTGRES_PASSWORD)
+      - name: POSTGRES_DB
+        value: postgres
+      - name: PGDATA
+        value: /var/lib/postgresql/data/pgdata
+      volumeMounts:
+      - name: data
+        mountPath: /var/lib/postgresql/data
+      readinessProbe:
+        tcpSocket:
+          port: postgres
+        periodSeconds: 5
+        timeoutSeconds: 3
+      livenessProbe:
+        tcpSocket:
+          port: postgres
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 3
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: polardb-mongo-ferretdb
+spec:
+  provider: kubeblocks.io
+  description: FerretDB frontend exposing a MongoDB-compatible API.
+  serviceKind: mongodb
+  serviceVersion: "5.0.0"
+  replicasLimit:
+    minReplicas: 1
+    maxReplicas: 16
+  vars:
+  - name: BACKEND_HOST
+    valueFrom:
+      serviceVarRef:
+        compDef: polardb-mongo-documentdb
+        name: default
+        optional: false
+        host: Required
+  - name: BACKEND_PORT
+    valueFrom:
+      serviceVarRef:
+        compDef: polardb-mongo-documentdb
+        name: default
+        optional: false
+        port:
+          name: postgres
+          option: Required
+  - name: FERRETDB_BACKEND_USER
+    valueFrom:
+      credentialVarRef:
+        compDef: polardb-mongo-documentdb
+        name: ferretdb
+        optional: false
+        username: Required
+  - name: FERRETDB_BACKEND_PASSWORD
+    valueFrom:
+      credentialVarRef:
+        compDef: polardb-mongo-documentdb
+        name: ferretdb
+        optional: false
+        password: Required
+  services:
+  - name: default
+    spec:
+      ports:
+      - name: mongodb
+        port: 27017
+        targetPort: mongodb
+  runtime:
+    containers:
+    - name: ferretdb
+      image: ghcr.io/ferretdb/ferretdb:2.7.0
+      imagePullPolicy: IfNotPresent
+      ports:
+      - containerPort: 27017
+        name: mongodb
+      env:
+      - name: FERRETDB_POSTGRESQL_URL
+        value: postgres://$(FERRETDB_BACKEND_USER):$(FERRETDB_BACKEND_PASSWORD)@$(BACKEND_HOST):$(BACKEND_PORT)/postgres?sslmode=disable
+      - name: FERRETDB_LISTEN_ADDR
+        value: 0.0.0.0:27017
+      - name: FERRETDB_TELEMETRY
+        value: disable
+      readinessProbe:
+        tcpSocket:
+          port: mongodb
+        periodSeconds: 5
+        timeoutSeconds: 3
+      livenessProbe:
+        tcpSocket:
+          port: mongodb
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 3
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: polardb-mongo-compat
+spec:
+  topologies:
+  - name: default
+    default: true
+    components:
+    - name: documentdb
+      compDef: polardb-mongo-documentdb
+    - name: ferretdb
+      compDef: polardb-mongo-ferretdb
+    orders:
+      provision:
+      - documentdb
+      - ferretdb
+      terminate:
+      - ferretdb
+      - documentdb
+      update:
+      - documentdb
+      - ferretdb
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: polardb-mongo-compat-mongodump
+spec:
+  backupType: Full
+  backup:
+    backupData:
+      image: docker.io/mongo:7.0
+      runOnTargetPodNode: false
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+      command:
+      - bash
+      - -c
+      - |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        handle_exit() {
+          exit_code=$?
+          if [ "${exit_code}" -ne 0 ]; then
+            touch "${DP_BACKUP_INFO_FILE}.exit"
+          fi
+          exit "${exit_code}"
+        }
+        trap handle_exit EXIT
+
+        export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}"
+        export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+
+        mongo_host="${KB_CLUSTER_NAME}-ferretdb.${KB_NAMESPACE}.svc"
+        mongo_user="${DP_DB_USER:-${POSTGRES_USER:-}}"
+        mongo_password="${DP_DB_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+        if [ -z "${mongo_user}" ] || [ -z "${mongo_password}" ]; then
+          echo "MongoDB-compatible backup credentials are not available" >&2
+          exit 1
+        fi
+        mongo_uri="mongodb://${mongo_user}:${mongo_password}@${mongo_host}:27017/?authMechanism=SCRAM-SHA-256&authSource=postgres"
+        start_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+        mongodump --quiet --uri "${mongo_uri}" --archive --gzip \
+          | datasafed push - "${DP_BACKUP_NAME}.archive.gz"
+
+        stop_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        total_size=$(datasafed stat / | awk '/TotalSize/ {print $2; exit}')
+        total_size=${total_size:-0}
+        printf '{"totalSize":"%s","timeRange":{"start":"%s","end":"%s"}}\n' \
+          "${total_size}" "${start_time}" "${stop_time}" > "${DP_BACKUP_INFO_FILE}"
+  restore:
+    postReady:
+    - job:
+        image: docker.io/mongo:7.0
+        runOnTargetPodNode: false
+        command:
+        - bash
+        - -c
+        - |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export PATH="${PATH}:${DP_DATASAFED_BIN_PATH}"
+          export DATASAFED_BACKEND_BASE_PATH="${DP_BACKUP_BASE_PATH}"
+
+          target_cluster="${DP_DB_HOST%%-documentdb-*}"
+          if [ "${target_cluster}" = "${DP_DB_HOST}" ]; then
+            echo "cannot derive the target cluster name from DP_DB_HOST=${DP_DB_HOST}" >&2
+            exit 1
+          fi
+
+          mongo_host="${target_cluster}-ferretdb.${KB_NAMESPACE}.svc"
+          mongo_user="${DP_DB_USER:-${POSTGRES_USER:-}}"
+          mongo_password="${DP_DB_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+          if [ -z "${mongo_user}" ] || [ -z "${mongo_password}" ]; then
+            echo "MongoDB-compatible restore credentials are not available" >&2
+            exit 1
+          fi
+          mongo_uri="mongodb://${mongo_user}:${mongo_password}@${mongo_host}:27017/?authMechanism=SCRAM-SHA-256&authSource=postgres"
+          for attempt in $(seq 1 60); do
+            if mongosh "${mongo_uri}" --quiet --eval 'if (db.runCommand({ping: 1}).ok !== 1) { quit(1); }' >/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              echo "MongoDB-compatible endpoint ${mongo_host}:27017 is not ready" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          datasafed pull "${DP_BACKUP_NAME}.archive.gz" - \
+            | mongorestore --quiet --uri "${mongo_uri}" --gzip --archive --drop
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: polardb-mongo-compat-backup-policy-template
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+  labels:
+    clusterdefinition.kubeblocks.io/name: polardb-mongo-compat
+    polardb-mongo-documentdb: polardb-mongo-documentdb
+spec:
+  clusterDefinitionRef: polardb-mongo-compat
+  backupPolicies:
+  - componentDefs:
+    - polardb-mongo-documentdb
+    target:
+      account: ferretdb
+      role: ""
+      strategy: Any
+    backupMethods:
+    - name: mongodump
+      actionSetName: polardb-mongo-compat-mongodump
+      snapshotVolumes: false
+      runtimeSettings:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+    schedules:
+    - backupMethod: mongodump
+      cronExpression: "0 18 * * *"
+      enabled: false
+      retentionPeriod: 7d
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-mongo-compat-sample
+  namespace: default
+spec:
+  terminationPolicy: Delete
+  affinity:
+    podAntiAffinity: Preferred
+    topologyKeys:
+    - kubernetes.io/hostname
+    tenancy: SharedNode
+  componentSpecs:
+  - name: documentdb
+    componentDef: polardb-mongo-documentdb
+    replicas: 1
+    disableExporter: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
+  - name: ferretdb
+    componentDef: polardb-mongo-ferretdb
+    replicas: 2
+    disableExporter: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: polardb-mongo-compat-sample-ferretdb
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: polardb-mongo-compat-sample
+    apps.kubeblocks.io/component-name: ferretdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: polardb-mongo-compat-sample
+      apps.kubeblocks.io/component-name: ferretdb
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: polardb-mongo-compat-sample-documentdb
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: polardb-mongo-compat-sample
+    apps.kubeblocks.io/component-name: documentdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: polardb-mongo-compat-sample
+      apps.kubeblocks.io/component-name: documentdb

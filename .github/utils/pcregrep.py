@@ -13,6 +13,12 @@ source_file_path = args.source
 filter_file_path = args.filter
 
 
+def is_localized_chinese_doc(path):
+    return path.startswith('i18n/zh-cn/') or (
+        path.startswith('docs/') and path.endswith('-zh.md')
+    )
+
+
 # Check only incremental files
 def pcregrep_Chinese(file_path, filter_path):
     check_pass = True
@@ -38,6 +44,8 @@ def pcregrep_Chinese(file_path, filter_path):
                 # There are Chinese characters
                 if pat.findall(line):
                     for path in filter_paths:
+                        if is_localized_chinese_doc(path):
+                            continue
                         # Matching incremental files
                         if path and path + ":" in line:
                             print(line[:-1])

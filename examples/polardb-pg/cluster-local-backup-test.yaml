@@ -1,0 +1,35 @@
+# Integration test only. It creates a separate real PolarDB-PG local-instance
+# cluster using the v3 immutable ComponentDefinition, which contains the
+# backup replication HBA postStart hook.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polardb-pg-backup-engine-test
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-pg-backup-engine-test
+  namespace: polardb-pg-backup-engine-test
+spec:
+  terminationPolicy: Delete
+  componentSpecs:
+    - name: polardb
+      componentDef: polardb-pg-local-v3
+      replicas: 1
+      disableExporter: true
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi

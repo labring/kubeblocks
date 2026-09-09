@@ -4,6 +4,7 @@ FROM alpine/helm:3.12.1 as builder
 # copy script to execute
 COPY docker/custom-scripts/fetch-all-helm-charts.sh /tmp/fetch-all-helm-charts.sh
 COPY deploy/helm deploy/helm
+COPY deploy/addons deploy/addons
 
 # fetch all helm charts
 RUN bash /tmp/fetch-all-helm-charts.sh deploy/helm /tmp/charts

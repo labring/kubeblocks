@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "polardbPostgresql.componentResourceName" (dict "suffix" "patroni-reload-script" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+data:
+  patroni_reload.tpl: |-
+    {{- .Files.Get "config/patroni-reload.tpl" | nindent 4 }}
+  bootstrap.yaml: |-
+    {{- .Files.Get "config/restart-parameter.yaml" | nindent 4 }}
+  patroni_parameter.yaml: |-
+    {{- .Files.Get "config/patroni-parameter.yaml" | nindent 4 }}
+  reload.yaml: |-
+    scripts: patroni_reload.tpl
+    dataType: patroni
+    dsn: localhost:8008

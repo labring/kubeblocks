@@ -1,0 +1,11 @@
+apiVersion: v2
+name: polardb-pg-stack-ops
+description: KubeBlocks Custom Ops bridge for the official PolarDB Stack Operator and Cluster Manager.
+type: application
+version: 0.3.3
+appVersion: "1.0"
+home: https://github.com/ApsaraDB/PolarDB-Stack-Operator
+sources:
+  - https://github.com/ApsaraDB/PolarDB-Stack-Operator
+maintainers:
+  - name: KubeBlocks PolarDB-PG integration

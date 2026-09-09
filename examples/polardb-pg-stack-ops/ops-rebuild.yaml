@@ -1,0 +1,17 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-rebuild
+  namespace: polardb-stack-demo
+spec:
+  clusterName: polardb-stack-demo
+  type: Custom
+  timeoutSeconds: 3600
+  custom:
+    opsDefinitionName: polardb-pg-stack-rebuild
+    serviceAccountName: polardb-pg-stack-ops
+    components:
+      - componentName: control
+        parameters:
+          - name: CONFIRM_FORCE_REBUILD
+            value: "true"

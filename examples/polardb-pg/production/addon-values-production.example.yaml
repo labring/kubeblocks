@@ -1,0 +1,19 @@
+# Use a separate, reviewed values file for each production environment. The
+# default chart value is intentionally not production-safe for replication HBA.
+backup:
+  replicationHbaCIDR: REPLACE_POD_CIDR
+  replicationHbaAuthMethod: scram-sha-256
+  schedule:
+    enabled: true
+    cronExpression: "0 1 * * *"
+    retentionPeriod: 30d
+
+# The production test environment uses VictoriaMetrics VMAlert. For a
+# Prometheus Operator environment, set prometheusRule.enabled instead.
+alertRule:
+  backupFailureMinutes: 15
+  restoreDrillFailureMinutes: 15
+  opsFailureMinutes: 5
+
+vmRule:
+  enabled: true

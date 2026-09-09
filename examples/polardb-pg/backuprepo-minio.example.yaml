@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: polardb-pg-minio-credentials
+  namespace: kb-system
+type: Opaque
+stringData:
+  accessKeyId: REPLACE_ACCESS_KEY
+  secretAccessKey: REPLACE_SECRET_KEY
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: BackupRepo
+metadata:
+  name: polardb-pg-minio
+  annotations:
+    dataprotection.kubeblocks.io/is-default-repo: "true"
+spec:
+  storageProviderRef: minio
+  accessMethod: Tool
+  pvReclaimPolicy: Retain
+  volumeCapacity: 100Gi
+  config:
+    bucket: REPLACE_BUCKET
+    endpoint: REPLACE_MINIO_ENDPOINT
+    region: us-east-1
+    insecure: "false"
+  credential:
+    name: polardb-pg-minio-credentials
+    namespace: kb-system

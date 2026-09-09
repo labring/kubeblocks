@@ -8,17 +8,25 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
 	"github.com/apecloud/kubeblocks/cmd/upgrader/steps"
 )
 
 func main() {
-	//解析命令行参数
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	// Parse command-line arguments.
 	var modulesFlag string
-	flag.StringVar(&modulesFlag, "modules", "core", "要执行的模块，逗号分隔: core,clickhouse,dbfix")
+	flag.StringVar(&modulesFlag, "modules", "core", "modules to run, separated by commas: core,clickhouse,dbfix")
 	flag.Parse()
 
 	modules := make(map[string]bool)
-	for _, m := range strings.FieldsFunc(modulesFlag, func(r rune) bool { return r == ',' || r == '，' }) {
+	for _, m := range strings.FieldsFunc(modulesFlag, func(r rune) bool { return r == ',' || r == 0xFF0C }) {
 		m = strings.TrimSpace(m)
 		if m != "" {
 			modules[m] = true
@@ -26,20 +34,18 @@ func main() {
 	}
 	modules["core"] = true
 
-	//创建工作目录
+	// Create the working directory.
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("获取用户主目录失败: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to get user home directory: %w", err)
 	}
 
 	workDir := filepath.Join(home, ".kb-upgrader", "workdir")
 	if err := os.MkdirAll(workDir, 0755); err != nil {
-		fmt.Printf("创建工作目录失败: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create working directory: %w", err)
 	}
 
-	//打印启动bannner
+	// Print the startup banner.
 	var moduleNames []string
 	for m := range modules {
 		moduleNames = append(moduleNames, m)
@@ -47,11 +53,11 @@ func main() {
 	sort.Strings(moduleNames)
 
 	fmt.Println("========================================")
-	fmt.Println("  KubeBlocks Upgrader (v0.8.x → v0.9.3)")
-	fmt.Printf("  模块: %s\n", strings.Join(moduleNames, ", "))
+	fmt.Println("  KubeBlocks Upgrader (v0.8.x -> v0.9.3)")
+	fmt.Printf("  Modules: %s\n", strings.Join(moduleNames, ", "))
 	fmt.Println("========================================")
 
-	//注册所有步骤
+	// Register all steps.
 	allSteps := steps.RegisterAll(modules)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,31 +69,28 @@ func main() {
 	}
 
 	for i, step := range allSteps {
-		fmt.Printf("\n[%d/%d] %s — %s\n", i+1, len(allSteps), step.Name(), step.Description())
+		fmt.Printf("\n[%d/%d] %s - %s\n", i+1, len(allSteps), step.Name(), step.Description())
 
 		if skip, err := step.Check(opts); err != nil {
-			fmt.Printf("       → 检查失败: %v\n", err)
-			fmt.Println("\n前置检查失败，升级已暂停。")
-			fmt.Println("请手动修复问题后重新运行以继续升级。")
-			os.Exit(1)
+			return fmt.Errorf("check failed for %s: %w\nupgrade paused; fix the issue and run the upgrader again", step.Name(), err)
 		} else if skip {
-			fmt.Println("       → 已符合预期，跳过")
+			fmt.Println("       already in the expected state; skipping")
 			continue
 		}
 
 		if err := step.Run(opts); err != nil {
-			fmt.Printf("       → 失败: %v\n", err)
-			fmt.Println("\n此步骤失败，升级已暂停。")
-			fmt.Println("请手动修复问题后重新运行以继续升级。")
-			os.Exit(1)
+			return fmt.Errorf("step %s failed: %w\nupgrade paused; fix the issue and run the upgrader again", step.Name(), err)
 		}
 
-		fmt.Println("       → 成功")
+		fmt.Println("       completed")
 	}
 
 	fmt.Printf("\n========================================\n")
-	fmt.Printf("  所有 %d 个步骤全部完成！\n", len(allSteps))
+	fmt.Printf("  All %d steps completed.\n", len(allSteps))
 	fmt.Println("========================================")
 
-	os.RemoveAll(workDir)
+	if err := os.RemoveAll(workDir); err != nil {
+		return fmt.Errorf("failed to remove working directory: %w", err)
+	}
+	return nil
 }

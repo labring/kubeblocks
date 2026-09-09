@@ -1,0 +1,26 @@
+# Install or upgrade the PolarDB PostgreSQL addon with this values file only
+# after the BackupRepo is Ready and alert routing has been tested.
+# Set all three external runtime image digests in the approved production copy.
+# A single spilo digest is valid only when the Cluster uses the matching
+# serviceVersion; create separate release values for other PostgreSQL versions.
+image:
+  digest: sha256:REPLACE_APPROVED_SPILO_DIGEST
+metrics:
+  image:
+    digest: sha256:REPLACE_APPROVED_POSTGRES_EXPORTER_DIGEST
+pgbouncer:
+  image:
+    digest: sha256:REPLACE_APPROVED_PGBOUNCER_DIGEST
+
+prometheusRule:
+  enabled: true
+  replicationLagSeconds: 60
+  backupFailureMinutes: 15
+  restoreDrillFailureMinutes: 15
+
+backup:
+  schedule:
+    enabled: true
+    # UTC. Schedule the restore drill after this backup finishes.
+    cronExpression: "0 1 * * *"
+    retentionPeriod: 30d

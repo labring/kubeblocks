@@ -80,6 +80,9 @@ func (r *OpsRequest) ValidateUpdate(old runtime.Object) (admission.Warnings, err
 	if reflect.DeepEqual(lastOpsRequest.Spec, r.Spec) {
 		return nil, nil
 	}
+	if !reflect.DeepEqual(lastOpsRequest.Spec.RebuildFrom, r.Spec.RebuildFrom) {
+		return nil, fmt.Errorf("update OpsRequest: %s is forbidden to update spec.rebuildFrom", r.Name)
+	}
 
 	if r.IsComplete() {
 		return nil, fmt.Errorf("update OpsRequest: %s is forbidden when status.Phase is %s", r.Name, r.Status.Phase)

@@ -1,0 +1,17 @@
+annotations:
+  addon.kubeblocks.io/kubeblocks-version: '>=0.9.0 <1.0.0'
+  addon.kubeblocks.io/model: RDBMS
+  addon.kubeblocks.io/provider: community
+apiVersion: v2
+appVersion: 12.15.0
+description: PolarDB PostgreSQL HA addon for KubeBlocks 0.9
+home: https://kubeblocks.io/
+icon: https://kubeblocks.io/img/logo.png
+maintainers:
+- name: wallyxjh
+  url: https://github.com/wallyxjh/kubeblocks/
+name: polardb-postgresql
+sources:
+- https://github.com/wallyxjh/kubeblocks/
+type: application
+version: 0.9.3

@@ -130,6 +130,21 @@ var _ = Describe("OpsRequest webhook", func() {
 		return fmt.Sprintf("components: [%s] not found", notFoundComponents)
 	}
 
+	It("forbids updating rebuildFrom through the validating webhook", func() {
+		oldOpsRequest := createTestOpsRequest(clusterName, opsRequestName+"-rebuild", RebuildInstanceType)
+		oldOpsRequest.Spec.RebuildFrom = []RebuildInstance{{
+			ComponentOps: ComponentOps{ComponentName: componentName},
+			Instances: []Instance{{
+				Name: clusterName + "-" + componentName + "-0",
+			}},
+		}}
+		newOpsRequest := oldOpsRequest.DeepCopy()
+		newOpsRequest.Spec.RebuildFrom[0].Instances[0].Name = clusterName + "-" + componentName + "-1"
+
+		_, err := newOpsRequest.ValidateUpdate(oldOpsRequest)
+		Expect(err).Should(MatchError(ContainSubstring("forbidden to update spec.rebuildFrom")))
+	})
+
 	testUpgrade := func(cluster *Cluster) {
 		opsRequest := createTestOpsRequest(clusterName, opsRequestName+"-upgrade", UpgradeType)
 

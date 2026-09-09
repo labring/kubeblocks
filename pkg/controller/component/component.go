@@ -77,9 +77,18 @@ func BuildComponent(cluster *appsv1alpha1.Cluster, compSpec *appsv1alpha1.Cluste
 	if err != nil {
 		return nil, err
 	}
+	componentLabels := constant.GetComponentWellKnownLabels(cluster.Name, compSpec.Name)
+	if compDefName != "" {
+		componentLabels = intctrlutil.MergeMetadataMaps(
+			componentLabels,
+			constant.GetKBWellKnownLabelsWithCompDef(compDefName, cluster.Name, compSpec.Name),
+			constant.GetComponentDefLabel(compDefName),
+			map[string]string{constant.ComponentDefinitionLabelKey: compDefName},
+		)
+	}
 	compBuilder := builder.NewComponentBuilder(cluster.Namespace, compName, compDefName).
 		AddAnnotations(constant.KubeBlocksGenerationKey, strconv.FormatInt(cluster.Generation, 10)).
-		AddLabelsInMap(constant.GetComponentWellKnownLabels(cluster.Name, compSpec.Name)).
+		AddLabelsInMap(componentLabels).
 		AddLabels(constant.KBAppClusterUIDLabelKey, string(cluster.UID)).
 		SetServiceVersion(compSpec.ServiceVersion).
 		SetLabels(compSpec.Labels).
