@@ -1,0 +1,19 @@
+# API-contract test only. A test harness removes forceRebuild after observing
+# it. Never apply this to a real MPDCluster.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-contract-rebuild
+  namespace: polardb-stack-contract-test
+spec:
+  clusterName: polardb-stack-contract-test
+  type: Custom
+  timeoutSeconds: 180
+  custom:
+    opsDefinitionName: polardb-pg-stack-rebuild
+    serviceAccountName: polardb-pg-stack-ops
+    components:
+      - componentName: control
+        parameters:
+          - name: CONFIRM_FORCE_REBUILD
+            value: "true"

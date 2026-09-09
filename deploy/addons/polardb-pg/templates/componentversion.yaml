@@ -1,0 +1,21 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentVersion
+metadata:
+  name: {{ include "polardbPg.resourceName" (dict "suffix" "version" "Values" .Values) }}
+  annotations:
+    componentversion.kubeblocks.io/compatible-definitions: {{ include "polardbPg.componentDefinitionName" . }}
+    helm.sh/resource-policy: keep
+  labels:
+    {{ include "polardbPg.componentDefinitionName" . }}: {{ include "polardbPg.componentDefinitionName" . }}
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+  compatibilityRules:
+    - compDefs:
+        - {{ include "polardbPg.componentDefinitionName" . }}
+      releases:
+        - {{ .Values.localInstance.serviceVersion | quote }}
+  releases:
+    - name: {{ .Values.localInstance.serviceVersion | quote }}
+      serviceVersion: {{ .Values.localInstance.serviceVersion | quote }}
+      images:
+        polardb: {{ include "polardbPg.image" . }}

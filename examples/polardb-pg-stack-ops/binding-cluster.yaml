@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polardb-stack-demo
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-stack-demo
+  namespace: polardb-stack-demo
+  annotations:
+    # These names point to an MPDCluster created and owned by the official
+    # PolarDB Stack Operator. KubeBlocks does not create or reconcile it.
+    polardb-pg.kubeblocks.io/mpdcluster: REPLACE_MPDCLUSTER_NAME
+    polardb-pg.kubeblocks.io/mpdcluster-namespace: REPLACE_MPDCLUSTER_NAMESPACE
+    polardb-pg.kubeblocks.io/control-plane: stack-operator
+spec:
+  terminationPolicy: DoNotTerminate
+  componentSpecs:
+    - name: control
+      componentDef: polardb-pg-stack-control-v2
+      replicas: 0
+      disableExporter: true
+      serviceAccountName: polardb-pg-stack-ops

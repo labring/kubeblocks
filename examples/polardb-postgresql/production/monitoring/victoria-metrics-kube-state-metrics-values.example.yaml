@@ -1,0 +1,71 @@
+# Merge into the victoria-metrics-k8s-stack Helm values used by the target
+# cluster. This creates the kube_customresource_status_phase series consumed by
+# the PolarDB PostgreSQL backup alerts. Keep labels aligned with the
+# PrometheusRule template.
+kube-state-metrics:
+  customResourceState:
+    enabled: true
+    config:
+      kind: CustomResourceStateMetrics
+      spec:
+        resources:
+        - groupVersionKind:
+            group: dataprotection.kubeblocks.io
+            version: v1alpha1
+            kind: BackupPolicy
+          metricNamePrefix: kube_customresource
+          labelsFromPath:
+            app_kubernetes_io_instance:
+            - metadata
+            - labels
+            - app.kubernetes.io/instance
+            backup_policy:
+            - metadata
+            - name
+            component_definition:
+            - metadata
+            - labels
+            - apps.kubeblocks.io/component-def-ref
+          metrics:
+          - name: status_phase
+            help: KubeBlocks BackupPolicy phase.
+            each:
+              type: StateSet
+              stateSet:
+                labelName: phase
+                path:
+                - status
+                - phase
+                list:
+                - Available
+                - Unavailable
+                - Failed
+        - groupVersionKind:
+            group: dataprotection.kubeblocks.io
+            version: v1alpha1
+            kind: Backup
+          metricNamePrefix: kube_customresource
+          labelsFromPath:
+            app_kubernetes_io_instance:
+            - metadata
+            - labels
+            - app.kubernetes.io/instance
+            backup_policy:
+            - metadata
+            - labels
+            - dataprotection.kubeblocks.io/backup-policy
+          metrics:
+          - name: status_phase
+            help: KubeBlocks Backup phase.
+            each:
+              type: StateSet
+              stateSet:
+                labelName: phase
+                path:
+                - status
+                - phase
+                list:
+                - New
+                - Running
+                - Completed
+                - Failed

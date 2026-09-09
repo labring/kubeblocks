@@ -1,0 +1,14 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-fence-instance
+  namespace: kb-polardb-pg
+spec:
+  clusterName: polardb-pg
+  type: HorizontalScaling
+  horizontalScaling:
+  - componentName: postgresql
+    scaleIn:
+      replicaChanges: 1
+      onlineInstancesToOffline:
+      - polardb-pg-postgresql-0

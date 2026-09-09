@@ -4,8 +4,13 @@ on:
   pull_request_target:
     types: [ edited, opened ]
 
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
 env:
-  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   pr-check:
@@ -27,9 +32,12 @@ jobs:
 
       - uses: actions/checkout@v4
       - name: check issue link
+        if: github.event.repository.has_issues
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           bash ${{ github.workspace }}/.github/utils/issue_link.sh \
             ${{ github.repository }} \
             ${{ github.repository_owner }} \
             ${{ github.event.pull_request.number }} \
-            "${{ github.event.pull_request.title }}"
+            "$PR_TITLE"

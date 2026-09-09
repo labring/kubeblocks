@@ -1,0 +1,13 @@
+# Integration test only. The BackupRepo name is patched into the Cluster before
+# applying this object; see docs/polardb-pg-stack-ops-zh.md for the production
+# remote backup procedure.
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Backup
+metadata:
+  name: polardb-pg-backup-engine-test-basebackup
+  namespace: polardb-pg-backup-engine-test
+spec:
+  backupPolicyName: polardb-pg-backup-engine-test-polardb-backup-policy
+  backupMethod: polar-pg-basebackup
+  deletionPolicy: Retain
+  retentionPeriod: 7d

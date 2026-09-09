@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-switchover-candidate
+  namespace: kb-polardb-pg
+spec:
+  clusterName: polardb-pg
+  type: Switchover
+  switchover:
+  - componentName: postgresql
+    instanceName: polardb-pg-postgresql-0

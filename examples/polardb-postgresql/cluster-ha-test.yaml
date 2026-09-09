@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polardb-prod
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-pg
+  namespace: polardb-prod
+spec:
+  terminationPolicy: Delete
+  componentSpecs:
+    - name: postgresql
+      componentDef: polardb-postgresql-ha-v1
+      replicas: 2
+      disableExporter: false
+      affinity:
+        podAntiAffinity: Preferred
+        topologyKeys:
+          - kubernetes.io/hostname
+        tenancy: SharedNode
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi

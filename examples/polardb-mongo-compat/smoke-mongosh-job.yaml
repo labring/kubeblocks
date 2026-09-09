@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: polardb-mongo-compat-smoke
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: mongosh
+        image: docker.io/mongo:7.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MONGO_USER
+          valueFrom:
+            secretKeyRef:
+              name: polardb-mongo-compat-sample-documentdb-account-ferretdb
+              key: username
+        - name: MONGO_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: polardb-mongo-compat-sample-documentdb-account-ferretdb
+              key: password
+        - name: MONGO_HOST
+          value: polardb-mongo-compat-sample-ferretdb
+        command:
+        - bash
+        - -lc
+        - |
+          set -euo pipefail
+          URI="mongodb://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_HOST}:27017/kbcompat?authMechanism=SCRAM-SHA-256&authSource=postgres"
+          mongosh "$URI" --quiet --eval '
+            function check(condition, message) { if (!condition) { throw new Error(message); } }
+            function ok(result, message) { check(result && result.ok === 1, message + ": " + JSON.stringify(result)); }
+            db.matrix.drop();
+            ok(db.runCommand({create: "matrix"}), "create collection");
+            const insertResult = db.matrix.insertMany([
+              {_id: 1, type: "alpha", qty: 2, nested: {score: 10}},
+              {_id: 2, type: "beta", qty: 5, nested: {score: 20}},
+              {_id: 3, type: "alpha", qty: 7, nested: {score: 15}}
+            ]);
+            check(insertResult.acknowledged === true, "insertMany not acknowledged");
+            check(db.matrix.countDocuments({}) === 3, "count after insert");
+            const updateResult = db.matrix.updateOne({_id: 1}, {$inc: {qty: 4}, $set: {checked: true}});
+            check(updateResult.modifiedCount === 1, "update modifiedCount");
+            const deleteResult = db.matrix.deleteOne({_id: 2});
+            check(deleteResult.deletedCount === 1, "delete count");
+            const indexName = db.matrix.createIndex({type: 1, qty: -1}, {name: "type_qty"});
+            check(indexName === "type_qty", "index name");
+            const found = db.matrix.find({type: "alpha"}).sort({qty: -1}).toArray();
+            const agg = db.matrix.aggregate([
+              {$match: {type: "alpha"}},
+              {$group: {_id: "$type", total: {$sum: "$qty"}, maxScore: {$max: "$nested.score"}}}
+            ]).toArray();
+            const indexes = db.matrix.getIndexes().map(i => i.name).sort();
+            ok(db.runCommand({ping: 1}), "ping");
+            check(found.length === 2 && found[0].qty === 7 && found[1].qty === 6, "find sort result");
+            check(agg.length === 1 && agg[0].total === 13 && agg[0].maxScore === 15, "aggregate result");
+            check(indexes.includes("_id_") && indexes.includes("type_qty"), "indexes result");
+            print(JSON.stringify({ping: 1, count: db.matrix.countDocuments({}), found, agg, indexes}));
+          '

@@ -1,0 +1,9 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Backup
+metadata:
+  name: polardb-mongo-compat-sample-backup
+  namespace: default
+spec:
+  backupMethod: mongodump
+  backupPolicyName: polardb-mongo-compat-sample-documentdb-backup-policy
+  deletionPolicy: Retain

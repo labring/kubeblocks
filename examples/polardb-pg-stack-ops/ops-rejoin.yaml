@@ -1,0 +1,17 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-stack-rejoin
+  namespace: polardb-stack-demo
+spec:
+  clusterName: polardb-stack-demo
+  type: Custom
+  timeoutSeconds: 1200
+  custom:
+    opsDefinitionName: polardb-pg-stack-rejoin
+    serviceAccountName: polardb-pg-stack-ops
+    components:
+      - componentName: control
+        parameters:
+          - name: TARGET_INSTANCE
+            value: REPLACE_INSTANCE_ID

@@ -26,7 +26,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: pre-upgrade-job
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.Version .Values.image.tag) "digest" .Values.image.tools.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /bin/helm_hook
@@ -34,7 +34,7 @@ spec:
             - --version={{ .Chart.Version }}
             - --namespace={{ .Release.Namespace }}
         - name: delete-ops
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.Version .Values.image.tag) "digest" .Values.image.tools.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - sh

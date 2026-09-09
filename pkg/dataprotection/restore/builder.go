@@ -299,9 +299,10 @@ func (r *restoreJobBuilder) build() *batchv1.Job {
 	}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      r.jobName,
-			Namespace: r.restore.Namespace,
-			Labels:    r.labels,
+			Name:        r.jobName,
+			Namespace:   r.restore.Namespace,
+			Labels:      r.labels,
+			Annotations: BuildRestoreAnnotations(r.restore.Name),
 		},
 	}
 	podSpec := job.Spec.Template.Spec

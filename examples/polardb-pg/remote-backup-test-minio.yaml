@@ -1,0 +1,160 @@
+# Test-only S3-compatible target for validating BackupRepo(accessMethod: Tool).
+# It intentionally uses emptyDir and must never be used as a production backup
+# repository. Production must use an independently operated S3/MinIO service.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polardb-pg-backup-test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: polardb-pg-minio-test-credentials
+  namespace: polardb-pg-backup-test
+type: Opaque
+stringData:
+  accessKeyId: minioadmin
+  secretAccessKey: minioadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: polardb-pg-backup-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: docker.io/minio/minio@sha256:477acdac119305949d9a6f5f3fbe2d8029e18c5e39de11034d3ffec03cc69e48
+          imagePullPolicy: IfNotPresent
+          args: [server, /data, --console-address, ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-minio-test-credentials
+                  key: accessKeyId
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-minio-test-credentials
+                  key: secretAccessKey
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: polardb-pg-backup-test
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-polardb-backups-bucket
+  namespace: polardb-pg-backup-test
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: docker.io/minio/mc@sha256:f8f83a4e5db15d5fe021cad60f45a976e852c39193dc31cdde033e7ae8f429e1
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-minio-test-credentials
+                  key: accessKeyId
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: polardb-pg-minio-test-credentials
+                  key: secretAccessKey
+          args:
+            - |
+              until mc alias set test http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 2; done
+              mc mb --ignore-existing test/polardb-backups
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: StorageProvider
+metadata:
+  name: polardb-pg-minio-tool-test
+spec:
+  # No CSI driver is configured because this BackupRepo is Tool-only. The
+  # datasafed worker uploads directly to the S3 endpoint.
+  datasafedConfigTemplate: |
+    [storage]
+    type = s3
+    provider = Minio
+    env_auth = false
+    access_key_id = {{ index .Parameters "accessKeyId" }}
+    secret_access_key = {{ index .Parameters "secretAccessKey" }}
+    region = {{ index .Parameters "region" }}
+    endpoint = {{ index .Parameters "endpoint" }}
+    root = {{ index .Parameters "bucket" }}
+    no_check_certificate = {{ index .Parameters "insecure" }}
+    chunk_size = 50Mi
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [bucket, endpoint, accessKeyId, secretAccessKey]
+      properties:
+        bucket:
+          type: string
+        endpoint:
+          type: string
+        region:
+          type: string
+        accessKeyId:
+          type: string
+        secretAccessKey:
+          type: string
+        insecure:
+          type: boolean
+    credentialFields: [accessKeyId, secretAccessKey]
+---
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: BackupRepo
+metadata:
+  name: polardb-pg-minio-tool-test
+spec:
+  storageProviderRef: polardb-pg-minio-tool-test
+  accessMethod: Tool
+  pvReclaimPolicy: Retain
+  volumeCapacity: 1Gi
+  config:
+    bucket: polardb-backups
+    endpoint: http://minio.polardb-pg-backup-test.svc:9000
+    region: us-east-1
+    insecure: "true"
+  credential:
+    name: polardb-pg-minio-test-credentials
+    namespace: polardb-pg-backup-test

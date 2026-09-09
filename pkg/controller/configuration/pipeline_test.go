@@ -251,7 +251,7 @@ max_connections = '1000'
 				},
 			}
 
-			appliedVersion, err := json.Marshal(item)
+			appliedVersion, err := json.Marshal(&item)
 			Expect(err).Should(Succeed())
 			configMapObj.Annotations = map[string]string{
 				constant.ConfigAppliedVersionAnnotationKey: string(appliedVersion),

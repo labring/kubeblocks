@@ -56,7 +56,7 @@ func helmTrackedAddonCRNames(opts RunOptions) (map[string]struct{}, error) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal([]byte(out), &releases); err != nil {
-		return nil, fmt.Errorf("解析 helm list JSON 失败: %w", err)
+		return nil, fmt.Errorf("failed to parse helm list JSON: %w", err)
 	}
 	names := make(map[string]struct{})
 	for _, r := range releases {
@@ -110,7 +110,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 	addonOut, err := kubectl(opts, "get", "addons.extensions.kubeblocks.io",
 		"-l", "app.kubernetes.io/name=kubeblocks", "-o", "json")
 	if err != nil {
-		return nil, fmt.Errorf("获取 Addon 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to get Addon list: %w", err)
 	}
 	var addonList struct {
 		Items []struct {
@@ -125,7 +125,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(addonOut), &addonList); err != nil {
-		return nil, fmt.Errorf("解析 Addon 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to parse Addon list: %w", err)
 	}
 	for _, item := range addonList.Items {
 		if state, ok := states[item.Metadata.Name]; ok {
@@ -138,7 +138,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 	jobOut, err := kubectl(opts, "get", "jobs", "-n", addonJobNamespace,
 		"-l", "app.kubernetes.io/managed-by=kubeblocks", "-o", "json")
 	if err != nil {
-		return nil, fmt.Errorf("获取 Addon Job 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to get Addon Job list: %w", err)
 	}
 	var jobList struct {
 		Items []struct {
@@ -156,7 +156,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(jobOut), &jobList); err != nil {
-		return nil, fmt.Errorf("解析 Addon Job 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to parse Addon Job list: %w", err)
 	}
 	for _, item := range jobList.Items {
 		addonName := item.Metadata.Labels["extensions.kubeblocks.io/addon-name"]
@@ -186,7 +186,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 	podOut, err := kubectl(opts, "get", "pods", "-n", addonJobNamespace,
 		"-l", "app.kubernetes.io/managed-by=kubeblocks", "-o", "json")
 	if err != nil {
-		return nil, fmt.Errorf("获取 Addon Pod 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to get Addon Pod list: %w", err)
 	}
 	var podList struct {
 		Items []struct {
@@ -200,7 +200,7 @@ func loadHelmTrackedAddonRuntime(opts RunOptions, tracked map[string]struct{}, s
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(podOut), &podList); err != nil {
-		return nil, fmt.Errorf("解析 Addon Pod 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to parse Addon Pod list: %w", err)
 	}
 	for _, item := range podList.Items {
 		addonName := item.Metadata.Labels["extensions.kubeblocks.io/addon-name"]
@@ -256,15 +256,15 @@ func checkHelmTrackedAddonsSettled(opts RunOptions) bool {
 func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *ResourceSnapshot, startedAt time.Time) error {
 	tracked, err := trackedAddonNames(opts, snap)
 	if err != nil {
-		return fmt.Errorf("获取待跟踪 Addon 失败: %w", err)
+		return fmt.Errorf("failed to get tracked Addons: %w", err)
 	}
 	if len(tracked) == 0 {
-		logInfo("无 kb-addon-* Helm release，跳过 Addon 等待")
+		logInfo("no kb-addon-* Helm releases found; skipping Addon wait")
 		return nil
 	}
 
 	names := trackedAddonList(tracked)
-	logInfo("跟踪 Helm Addon: %s", strings.Join(names, ", "))
+	logInfo("tracking Helm Addons: %s", strings.Join(names, ", "))
 
 	announcedWaiting := false
 	lastSummary := ""
@@ -306,16 +306,16 @@ func waitHelmTrackedAddonsSettled(ctx context.Context, opts RunOptions, snap *Re
 
 		summary := strings.Join(summaryParts, " ")
 		if summary != lastSummary {
-			logInfo("Addon 收敛状态: %s", summary)
+			logInfo("Addon convergence state: %s", summary)
 			lastSummary = summary
 		}
 
 		if allSettled {
-			logInfo("所有 Helm Addon install job 已完成，Addon 已收敛到目标 generation 且 phase 回到终态")
+			logInfo("all Helm Addon install jobs completed; Addons reached the target generation and terminal phase")
 			return nil
 		}
 		if !announcedWaiting {
-			logInfo("Addon 当前尚未进入 install/upgrade 过程，继续等待 install job/pod 出现...")
+			logInfo("Addons have not entered install/upgrade yet; waiting for install jobs or Pods...")
 			announcedWaiting = true
 		}
 
@@ -354,7 +354,7 @@ func snapshotHelmTrackedAddons(opts RunOptions) (*ResourceSnapshot, error) {
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return nil, fmt.Errorf("解析 Addon 列表失败: %w", err)
+		return nil, fmt.Errorf("failed to parse Addon list: %w", err)
 	}
 	snap.ResourceVersion = list.Metadata.ResourceVersion
 	for _, it := range list.Items {
@@ -370,11 +370,11 @@ func snapshotHelmTrackedAddons(opts RunOptions) (*ResourceSnapshot, error) {
 func runScript(opts RunOptions, name string) error {
 	content, err := scripts.ReadFile(name)
 	if err != nil {
-		return fmt.Errorf("读取脚本 %s 失败: %w", name, err)
+		return fmt.Errorf("failed to read script %s: %w", name, err)
 	}
 	path := filepath.Join(opts.WorkDir, filepath.Base(name))
 	if err := os.WriteFile(path, content, 0755); err != nil {
-		return fmt.Errorf("写入脚本失败: %w", err)
+		return fmt.Errorf("failed to write script: %w", err)
 	}
 	cmd := exec.CommandContext(opts.Ctx, "bash", path)
 	cmd.Dir = opts.WorkDir
@@ -482,37 +482,6 @@ func checkDeploymentReady(opts RunOptions, ns, name string) bool {
 		dep.Status.UnavailableReplicas == 0
 }
 
-// checkAllPhases lists resources via `kubectl get <getArgs> -o json`,
-// applies optional name filter, and returns true when every item's phase is in expected.
-func checkAllPhases(opts RunOptions, getArgs []string, filter func(string) bool, expected map[string]bool) bool {
-	args := make([]string, 0, len(getArgs)+3)
-	args = append(args, "get")
-	args = append(args, getArgs...)
-	args = append(args, "-o", "json")
-	out := kubectlIgnoreError(opts, args...)
-	if out == "" {
-		return true
-	}
-	var list struct {
-		Items []struct {
-			Metadata struct{ Name string }  `json:"metadata"`
-			Status   struct{ Phase string } `json:"status"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return false
-	}
-	for _, item := range list.Items {
-		if filter != nil && !filter(item.Metadata.Name) {
-			continue
-		}
-		if !expected[item.Status.Phase] {
-			return false
-		}
-	}
-	return true
-}
-
 const clusterDefLabelKey = "clusterdefinition.kubeblocks.io/name"
 
 // clusterMatchesType checks spec.clusterDefinitionRef or the well-known label
@@ -526,39 +495,6 @@ func clusterMatchesType(clusterDefRef string, labels map[string]string, dbType s
 		return true
 	}
 	return false
-}
-
-func checkAllClustersPhase(opts RunOptions, dbType string) bool {
-	out := kubectlIgnoreError(opts, "get", "cluster", "-A", "-o", "json")
-	if out == "" {
-		return true
-	}
-	var list struct {
-		Items []struct {
-			Metadata struct {
-				Name   string            `json:"name"`
-				Labels map[string]string `json:"labels"`
-			} `json:"metadata"`
-			Spec struct {
-				ClusterDefinitionRef string `json:"clusterDefinitionRef"`
-			} `json:"spec"`
-			Status struct {
-				Phase string `json:"phase"`
-			} `json:"status"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return false
-	}
-	for _, item := range list.Items {
-		if !clusterMatchesType(item.Spec.ClusterDefinitionRef, item.Metadata.Labels, dbType) {
-			continue
-		}
-		if !clusterTerminalPhases[item.Status.Phase] {
-			return false
-		}
-	}
-	return true
 }
 
 // getHelmChartVersion returns the chart field (e.g. "kubeblocks-0.9.3") for a helm release, or "".
@@ -617,7 +553,7 @@ func mysqlConfHasLowerCase(data string) bool {
 func snapshotClustersByType(opts RunOptions, dbType string) (*ResourceSnapshot, error) {
 	out, err := kubectl(opts, "get", "cluster", "-A", "-o", "json")
 	if err != nil {
-		return nil, fmt.Errorf("获取 %s 集群列表失败: %w", dbType, err)
+		return nil, fmt.Errorf("failed to get %s cluster list: %w", dbType, err)
 	}
 	var list struct {
 		Metadata struct {
@@ -635,7 +571,7 @@ func snapshotClustersByType(opts RunOptions, dbType string) (*ResourceSnapshot, 
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return nil, fmt.Errorf("解析资源列表失败: %w", err)
+		return nil, fmt.Errorf("failed to parse resource list: %w", err)
 	}
 	snap := &ResourceSnapshot{
 		ResourceVersion: list.Metadata.ResourceVersion,
@@ -652,9 +588,9 @@ func snapshotClustersByType(opts RunOptions, dbType string) (*ResourceSnapshot, 
 		snap.Names[key] = struct{}{}
 	}
 	for k := range snap.Names {
-		logInfo("快照 %s", k)
+		logInfo("snapshot %s", k)
 	}
-	logInfo("快照完成: resourceVersion=%s, %d 个 %s 集群", snap.ResourceVersion, len(snap.Names), dbType)
+	logInfo("snapshot complete: resourceVersion=%s, %d %s clusters", snap.ResourceVersion, len(snap.Names), dbType)
 	return snap, nil
 }
 
@@ -662,7 +598,7 @@ func snapshotClustersByType(opts RunOptions, dbType string) (*ResourceSnapshot, 
 func saveSnapshot(opts RunOptions, dbType string, target *ResourceSnapshot) {
 	snap, err := snapshotClustersByType(opts, dbType)
 	if err != nil {
-		logWarn("快照 %s 集群失败: %v", dbType, err)
+		logWarn("failed to snapshot %s clusters: %v", dbType, err)
 		return
 	}
 	if target != nil {
@@ -700,10 +636,10 @@ func runWatch(ctx context.Context, status map[string]string, rv string,
 	fmt.Printf("         $ kubectl %s\n", strings.Join(watchArgs, " "))
 	stdout, err := watchCmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("创建 watch pipe 失败: %w", err)
+		return fmt.Errorf("failed to create watch pipe: %w", err)
 	}
 	if err := watchCmd.Start(); err != nil {
-		return fmt.Errorf("启动 watch 失败: %w", err)
+		return fmt.Errorf("failed to start watch: %w", err)
 	}
 
 	dec := json.NewDecoder(stdout)
@@ -718,12 +654,12 @@ func runWatch(ctx context.Context, status map[string]string, rv string,
 			} `json:"status"`
 		}
 		if err := dec.Decode(&obj); err != nil {
-			watchCmd.Process.Kill()
-			watchCmd.Wait()
+			_ = watchCmd.Process.Kill()
+			_ = watchCmd.Wait()
 			if ctx.Err() != nil {
 				break
 			}
-			return fmt.Errorf("watch 异常退出: %w", err)
+			return fmt.Errorf("watch exited unexpectedly: %w", err)
 		}
 		key := obj.Metadata.Name
 		if obj.Metadata.Namespace != "" {
@@ -731,10 +667,10 @@ func runWatch(ctx context.Context, status map[string]string, rv string,
 		}
 		if _, tracked := status[key]; tracked {
 			status[key] = obj.Status.Phase
-			logInfo("%s → %s", key, obj.Status.Phase)
+			logInfo("%s -> %s", key, obj.Status.Phase)
 			if allReady() {
-				watchCmd.Process.Kill()
-				watchCmd.Wait()
+				_ = watchCmd.Process.Kill()
+				_ = watchCmd.Wait()
 				return nil
 			}
 		}
@@ -746,7 +682,7 @@ func runWatch(ctx context.Context, status map[string]string, rv string,
 			pending = append(pending, fmt.Sprintf("%s(%s)", k, phase))
 		}
 	}
-	return fmt.Errorf("等待超时，未就绪: %s", strings.Join(pending, ", "))
+	return fmt.Errorf("timed out waiting for readiness: %s", strings.Join(pending, ", "))
 }
 
 // watchFromSnapshot watches from a snapshot's resourceVersion.
@@ -764,14 +700,14 @@ func watchFromSnapshot(ctx context.Context,
 	}
 
 	if snap.ResourceVersion == "" {
-		logInfo("resourceVersion 为空，改用 List+Watch 获取当前状态，跟踪 %d 个资源", len(status))
+		logInfo("resourceVersion is empty; using List+Watch to get current state for %d resources", len(status))
 		return refreshAndWatch(ctx, snap.Names, getArgs, terminalPhases)
 	}
 
-	logInfo("从 resourceVersion=%s 启动 watch，跟踪 %d 个资源", snap.ResourceVersion, len(status))
+	logInfo("starting watch from resourceVersion=%s for %d resources", snap.ResourceVersion, len(status))
 	err := runWatch(ctx, status, snap.ResourceVersion, getArgs, terminalPhases)
 	if err != nil && ctx.Err() == nil {
-		logWarn("watch 异常（可能 410 Gone），重新 List+Watch: %v", err)
+		logWarn("watch exited unexpectedly (possibly 410 Gone); retrying with List+Watch: %v", err)
 		return refreshAndWatch(ctx, snap.Names, getArgs, terminalPhases)
 	}
 	return err
@@ -788,7 +724,7 @@ func refreshAndWatch(ctx context.Context, trackedNames map[string]struct{},
 	args = append(args, "-o", "json")
 	out, err := kubectl(listOpts, args...)
 	if err != nil {
-		return fmt.Errorf("kubectl get 失败: %w", err)
+		return fmt.Errorf("kubectl get failed: %w", err)
 	}
 
 	type resource struct {
@@ -807,7 +743,7 @@ func refreshAndWatch(ctx context.Context, trackedNames map[string]struct{},
 		Items []resource `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return fmt.Errorf("解析资源列表失败: %w", err)
+		return fmt.Errorf("failed to parse resource list: %w", err)
 	}
 
 	status := make(map[string]string)
@@ -824,7 +760,7 @@ func refreshAndWatch(ctx context.Context, trackedNames map[string]struct{},
 		return nil
 	}
 
-	logInfo("fallback: 重新跟踪 %d 个资源，resourceVersion=%s", len(status), list.Metadata.ResourceVersion)
+	logInfo("fallback: re-tracking %d resources from resourceVersion=%s", len(status), list.Metadata.ResourceVersion)
 	return runWatch(ctx, status, list.Metadata.ResourceVersion, getArgs, terminalPhases)
 }
 

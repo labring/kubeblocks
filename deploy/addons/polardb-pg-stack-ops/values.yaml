@@ -1,0 +1,18 @@
+image:
+  # This is the operations control-plane image, not a database runtime. It
+  # contains kubectl v1.28.4 and curl and is fixed by digest.
+  registry: ghcr.io
+  repository: wallyxjh/kubeblocks-tools
+  digest: sha256:fc798eecb8b7f8871ab662baab63387ee1a2d0bbd64061a662e2c315c156ca38
+  pullPolicy: IfNotPresent
+
+controlComponentDefinition:
+  # This control component is deliberately scaled to zero. It supplies a
+  # KubeBlocks Cluster/OpsRequest anchor while PolarDB Stack owns every actual
+  # database Pod, service, PVC and Cluster Manager Pod.
+  name: polardb-pg-stack-control-v2
+  serviceVersion: 1.0.0
+
+ops:
+  timeoutSeconds: 900
+  stonithSecretName: polardb-pg-stonith

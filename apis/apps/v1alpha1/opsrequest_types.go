@@ -255,7 +255,6 @@ type SpecificOpsRequest struct {
 	// +patchStrategy=merge,retainKeys
 	// +listType=map
 	// +listMapKey=componentName
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="forbidden to update spec.rebuildFrom"
 	RebuildFrom []RebuildInstance `json:"rebuildFrom,omitempty"  patchStrategy:"merge,retainKeys" patchMergeKey:"componentName"`
 
 	// Specifies a custom operation defined by OpsDefinition.

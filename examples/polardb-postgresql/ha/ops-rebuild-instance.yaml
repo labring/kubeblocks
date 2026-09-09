@@ -1,0 +1,14 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-rebuild-instance
+  namespace: kb-polardb-pg
+spec:
+  clusterName: polardb-pg
+  type: RebuildInstance
+  force: true
+  rebuildFrom:
+  - componentName: postgresql
+    inPlace: false
+    instances:
+    - name: polardb-pg-postgresql-0

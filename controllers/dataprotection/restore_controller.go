@@ -112,8 +112,14 @@ func (r *RestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *RestoreReconciler) parseRestoreJob(ctx context.Context, object client.Object) []reconcile.Request {
 	job := object.(*batchv1.Job)
 	var requests []reconcile.Request
-	restoreName := job.Labels[dprestore.DataProtectionRestoreLabelKey]
+	restoreName := job.Annotations[dprestore.DataProtectionRestoreNameAnnotationKey]
+	if restoreName == "" {
+		restoreName = job.Labels[dprestore.DataProtectionRestoreLabelKey]
+	}
 	restoreNamespace := job.Labels[dprestore.DataProtectionRestoreNamespaceLabelKey]
+	if restoreNamespace == "" && job.Annotations[dprestore.DataProtectionRestoreNameAnnotationKey] != "" {
+		restoreNamespace = job.Namespace
+	}
 	if restoreName != "" && restoreNamespace != "" {
 		requests = append(requests, reconcile.Request{
 			NamespacedName: types.NamespacedName{
@@ -126,7 +132,7 @@ func (r *RestoreReconciler) parseRestoreJob(ctx context.Context, object client.O
 }
 
 func (r *RestoreReconciler) deleteExternalResources(reqCtx intctrlutil.RequestCtx, restore *dpv1alpha1.Restore) error {
-	labels := map[string]string{dprestore.DataProtectionRestoreLabelKey: restore.Name}
+	labels := map[string]string{dprestore.DataProtectionRestoreLabelKey: dprestore.RestoreLabelValue(restore.Name)}
 
 	// use map to avoid duplicate deletion of the same namespace.
 	namespaces := map[string]sets.Empty{

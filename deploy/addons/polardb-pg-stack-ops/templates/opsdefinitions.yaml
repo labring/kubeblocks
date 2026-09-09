@@ -1,0 +1,171 @@
+{{- $image := include "polardbPgStackOps.image" . -}}
+{{- $compDef := include "polardbPgStackOps.controlComponentDefinitionName" . -}}
+{{- $wait := .Values.ops.timeoutSeconds -}}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-switchover
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentInfos:
+    - componentDefinitionName: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+  actions:
+    - name: switch-rw
+      failurePolicy: Fail
+      parameters: [TARGET_INSTANCE]
+      workload:
+        type: Job
+        backoffLimit: 0
+        podSpec:
+          restartPolicy: Never
+          containers:
+            - name: stack-ops
+              image: {{ $image }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: WAIT_SECONDS
+                  value: {{ $wait | quote }}
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/switchover.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-rejoin
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentInfos:
+    - componentDefinitionName: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+  actions:
+    - name: rejoin
+      failurePolicy: Fail
+      parameters: [TARGET_INSTANCE]
+      workload:
+        type: Job
+        backoffLimit: 0
+        podSpec:
+          restartPolicy: Never
+          containers:
+            - name: stack-ops
+              image: {{ $image }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: WAIT_SECONDS
+                  value: {{ $wait | quote }}
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/rejoin.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-rebuild
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentInfos:
+    - componentDefinitionName: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [CONFIRM_FORCE_REBUILD]
+      properties:
+        CONFIRM_FORCE_REBUILD:
+          type: string
+          enum: ["true"]
+  actions:
+    - name: rebuild
+      failurePolicy: Fail
+      parameters: [CONFIRM_FORCE_REBUILD]
+      workload:
+        type: Job
+        backoffLimit: 0
+        podSpec:
+          restartPolicy: Never
+          containers:
+            - name: stack-ops
+              image: {{ $image }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: WAIT_SECONDS
+                  value: {{ $wait | quote }}
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/rebuild.sh" | nindent 18 }}
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsDefinition
+metadata:
+  name: polardb-pg-stack-fence
+  labels:
+    {{- include "polardbPgStackOps.labels" . | nindent 4 }}
+spec:
+  componentInfos:
+    - componentDefinitionName: {{ $compDef }}
+  parametersSchema:
+    openAPIV3Schema:
+      type: object
+      required: [TARGET_INSTANCE, FENCE_REASON]
+      properties:
+        TARGET_INSTANCE:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+        FENCE_REASON:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9 .,:/_-]{0,119}$'
+  actions:
+    - name: fence
+      failurePolicy: Fail
+      parameters: [TARGET_INSTANCE, FENCE_REASON]
+      workload:
+        type: Job
+        backoffLimit: 0
+        podSpec:
+          restartPolicy: Never
+          containers:
+            - name: stack-ops
+              image: {{ $image }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: WAIT_SECONDS
+                  value: {{ $wait | quote }}
+                - name: STONITH_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.ops.stonithSecretName }}
+                      key: endpoint
+                - name: STONITH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.ops.stonithSecretName }}
+                      key: token
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  {{- .Files.Get "scripts/common.sh" | nindent 18 }}
+                  {{- .Files.Get "scripts/fence.sh" | nindent 18 }}

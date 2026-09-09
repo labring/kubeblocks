@@ -1,0 +1,13 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: polardb-pg-restore-drill
+  namespace: kb-polardb-pg
+spec:
+  clusterName: polardb-pg-restore-drill
+  type: Restore
+  restore:
+    backupName: polardb-pg-ha-drill-backup
+    backupNamespace: kb-polardb-pg
+    volumeRestorePolicy: Parallel
+    deferPostReadyUntilClusterRunning: true

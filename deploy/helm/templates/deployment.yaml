@@ -47,14 +47,14 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers: # only download tools image to local
         - name: tools
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.tools.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           command:
             - /bin/true
         - name: datascript
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.datascript.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.datascript.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.datascript.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -129,9 +129,9 @@ spec:
             - name: KUBEBLOCKS_IMAGE_PULL_SECRETS
               value: {{ .Values.image.imagePullSecrets | toJson | quote }}
             - name: KUBEBLOCKS_TOOLS_IMAGE
-              value: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.tools.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              value: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.tools.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.tools.digest) }}"
             - name: KUBEBLOCKS_DATASCRIPT_CLIENTS_IMAGE
-              value: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.datascript.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              value: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.datascript.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.datascript.digest) }}"
             - name: KUBEBLOCKS_SERVICEACCOUNT_NAME
               value: {{ include "kubeblocks.serviceAccountName" . }}
             {{- if .Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1" }}
@@ -204,7 +204,7 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          image: "{{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ include "kubeblocks.image" (dict "registry" .Values.image.registry "repository" .Values.image.repository "tag" (default .Chart.AppVersion .Values.image.tag) "digest" .Values.image.digest) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: webhook-server

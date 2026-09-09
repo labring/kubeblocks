@@ -127,6 +127,46 @@ var _ = Describe("Lorry Utils", func() {
 			Expect(len(container.Ports)).Should(Equal(2))
 		})
 
+		It("should disable lorry HA by default for PolarDB PostgreSQL", func() {
+			handler := appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbe{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+						BuiltinHandler: &handler,
+					},
+				},
+			}
+			component.PodSpec.Containers = []corev1.Container{{Name: "postgresql"}}
+
+			buildLorryServiceContainer(component, container, lorryHTTPPort, lorryGRPCPort, nil)
+			env := getEnvVarByName(container.Env, constant.KBEnvEnableHA)
+			Expect(env).ShouldNot(BeNil())
+			Expect(env.Value).Should(Equal("false"))
+		})
+
+		It("should preserve explicit lorry HA setting for PolarDB PostgreSQL", func() {
+			handler := appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbe{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+						BuiltinHandler: &handler,
+					},
+				},
+			}
+			component.PodSpec.Containers = []corev1.Container{{
+				Name: "postgresql",
+				Env: []corev1.EnvVar{{
+					Name:  constant.KBEnvEnableHA,
+					Value: "true",
+				}},
+			}}
+
+			buildLorryServiceContainer(component, container, lorryHTTPPort, lorryGRPCPort, nil)
+			env := getEnvVarByName(container.Env, constant.KBEnvEnableHA)
+			Expect(env).ShouldNot(BeNil())
+			Expect(env.Value).Should(Equal("true"))
+		})
+
 		It("build lorry container if any builtinhandler specified", func() {
 			reqCtx := intctrlutil.RequestCtx{
 				Ctx: ctx,

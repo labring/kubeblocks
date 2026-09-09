@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-demo
+rules:
+  # Read the binding Cluster annotation only; this role cannot mutate any
+  # KubeBlocks Cluster, Component, Pod, Service, PVC, or Secret.
+  - apiGroups: [apps.kubeblocks.io]
+    resources: [clusters]
+    verbs: [get]
+  # This is the official PolarDB Stack control surface used by the four Ops.
+  - apiGroups: [mpd.polardb.aliyun.com]
+    resources: [mpdclusters]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: polardb-pg-stack-ops
+  namespace: polardb-stack-demo
+subjects:
+  - kind: ServiceAccount
+    name: polardb-pg-stack-ops
+    namespace: polardb-stack-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: polardb-pg-stack-ops

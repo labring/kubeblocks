@@ -27,7 +27,7 @@ jobs:
     name: Build and Push (${{ matrix.image }})
     runs-on: ubuntu-latest
     # Only publish on the repository's default branch (i.e. after PRs merge).
-    if: github.repository_owner == env.ORG && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +40,12 @@ jobs:
             context: .
           - image: kubeblocks-datascript
             dockerfile: ./docker/Dockerfile-datascript
+            context: .
+          - image: kubeblocks-dataprotection
+            dockerfile: ./docker/Dockerfile-dataprotection
+            context: .
+          - image: kubeblocks-addon-charts
+            dockerfile: ./docker/Dockerfile-charts
             context: .
 
     steps:

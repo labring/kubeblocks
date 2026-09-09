@@ -85,7 +85,7 @@ const (
 
 	// AppInstanceLabelKey refer cluster.Name
 	AppInstanceLabelKey = "app.kubernetes.io/instance"
-	// AppNameLabelKey refer clusterDefinition.Name before KubeBlocks Version 0.8.0 or refer ComponentDefinition.Name after KubeBlocks Version 0.8.0 (TODO：Pending)
+	// AppNameLabelKey refer clusterDefinition.Name before KubeBlocks Version 0.8.0 or refer ComponentDefinition.Name after KubeBlocks Version 0.8.0 (TODO: Pending)
 	AppNameLabelKey = "app.kubernetes.io/name"
 	// AppComponentLabelKey refer clusterDefinition.Spec.ComponentDefs[*].Name before KubeBlocks Version 0.8.0 or refer ComponentDefinition.Name after KubeBlocks Version 0.8.0
 	AppComponentLabelKey = "app.kubernetes.io/component"
@@ -164,7 +164,7 @@ const (
 	ExtraEnvAnnotationKey                       = "kubeblocks.io/extra-env"
 	LastRoleSnapshotVersionAnnotationKey        = "apps.kubeblocks.io/last-role-snapshot-version"
 	ComponentScaleInAnnotationKey               = "apps.kubeblocks.io/component-scale-in" // ComponentScaleInAnnotationKey specifies whether the component is scaled in
-	SnapShotForStartAnnotationKey               = "kubeblocks.io/snapshot-for-start"       // SnapShotForStartAnnotationKey saves the replicas snapshot of components before stopping the cluster.
+	SnapShotForStartAnnotationKey               = "kubeblocks.io/snapshot-for-start"      // SnapShotForStartAnnotationKey saves the replicas snapshot of components before stopping the cluster.
 	DisableHAAnnotationKey                      = "kubeblocks.io/disable-ha"
 	// kubeblocks.io well-known finalizers
 	DBClusterFinalizerName         = "cluster.kubeblocks.io/finalizer"

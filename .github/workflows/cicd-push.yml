@@ -90,12 +90,19 @@ jobs:
 
   make-test:
     needs: trigger-mode
-    runs-on: [self-hosted, gke-runner-go1.21]
+    # The former self-hosted runner is not provisioned reliably.  Use the
+    # maintained GitHub-hosted image so the required full test gate can run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     if: contains(needs.trigger-mode.outputs.trigger-mode, '[test]')
     outputs:
       runner-name: ${{ steps.get_runner_name.outputs.runner_name }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ env.GO_VERSION }}"
       - name: make manifests check
         run: |
           make manifests
@@ -170,7 +177,6 @@ jobs:
       GO_VERSION: "1.21"
       BUILDX_PLATFORMS: "linux/amd64"
       DOCKERFILE_PATH: "./docker/Dockerfile"
-    secrets: inherit
 
   check-tools-image:
     permissions:
@@ -185,7 +191,6 @@ jobs:
       GO_VERSION: "1.21"
       BUILDX_PLATFORMS: "linux/amd64"
       DOCKERFILE_PATH: "./docker/Dockerfile-tools"
-    secrets: inherit
 
   check-datascript-image:
     permissions:
@@ -198,7 +203,6 @@ jobs:
       IMG: "apecloud/kubeblocks-datascript"
       BUILDX_PLATFORMS: "linux/amd64"
       DOCKERFILE_PATH: "./docker/Dockerfile-datascript"
-    secrets: inherit
 
   check-dataprotection-image:
     permissions:
@@ -211,7 +215,6 @@ jobs:
       IMG: "apecloud/kubeblocks-dataprotection"
       BUILDX_PLATFORMS: "linux/amd64"
       DOCKERFILE_PATH: "./docker/Dockerfile-dataprotection"
-    secrets: inherit
 
   check-helm:
     needs: trigger-mode
@@ -225,7 +228,6 @@ jobs:
       APECD_REF: "v0.1.43"
       MAKE_OPS_POST: "install"
       GO_VERSION: "1.21"
-    secrets: inherit
 
   deploy-kubeblocks-io:
     needs: trigger-mode
@@ -236,9 +238,11 @@ jobs:
       BRANCH_NAME: "master"
       WORKFLOW_ID: "deploy.yml"
       APECD_REF: "v0.1.0"
-    secrets: inherit
 
   deploy-cn-kubeblocks-io:
+    permissions:
+      contents: write
+      id-token: write
     needs: trigger-mode
     if: ${{ contains(needs.trigger-mode.outputs.trigger-mode, '[docs_cn]') && (github.ref_name == 'main' || startsWith(github.ref_name, 'release')) }}
     uses: apecloud/apecloud-cd/.github/workflows/trigger-workflow.yml@v0.1.43
@@ -247,4 +251,3 @@ jobs:
       BRANCH_NAME: "master"
       WORKFLOW_ID: "deploy.yml"
       APECD_REF: "v0.1.43"
-    secrets: inherit

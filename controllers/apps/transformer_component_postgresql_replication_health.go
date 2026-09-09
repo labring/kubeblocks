@@ -127,7 +127,8 @@ func isPostgreSQLBuiltinHandler(handler appsv1alpha1.BuiltinActionHandlerType) b
 	switch strings.ToLower(strings.TrimSpace(string(handler))) {
 	case string(appsv1alpha1.PostgresqlBuiltinActionHandler),
 		string(appsv1alpha1.OfficialPostgresqlBuiltinActionHandler),
-		string(appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler):
+		string(appsv1alpha1.ApeCloudPostgresqlBuiltinActionHandler),
+		string(appsv1alpha1.PolarDBPostgresqlBuiltinActionHandler):
 		return true
 	default:
 		return false

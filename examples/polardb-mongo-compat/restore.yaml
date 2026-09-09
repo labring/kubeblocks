@@ -1,0 +1,45 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: polardb-mongo-compat-restored
+  namespace: default
+  annotations:
+    kubeblocks.io/restore-from-backup: '{"documentdb":{"name":"polardb-mongo-compat-sample-backup","namespace":"default","doReadyRestoreAfterClusterRunning":"true"}}'
+spec:
+  terminationPolicy: Delete
+  affinity:
+    podAntiAffinity: Preferred
+    topologyKeys:
+    - kubernetes.io/hostname
+    tenancy: SharedNode
+  componentSpecs:
+  - name: documentdb
+    componentDef: polardb-mongo-documentdb
+    replicas: 1
+    disableExporter: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
+  - name: ferretdb
+    componentDef: polardb-mongo-ferretdb
+    replicas: 2
+    disableExporter: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi

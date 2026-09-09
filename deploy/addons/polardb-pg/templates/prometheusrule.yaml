@@ -1,0 +1,89 @@
+{{- define "polardbPg.alertRuleSpec" -}}
+groups:
+  - name: {{ include "polardbPg.componentDefinitionName" . }}
+    rules:
+      - alert: PolarDBPGBackupPolicyUnavailable
+        expr: |
+          kube_customresource_status_phase{
+            customresource_kind="BackupPolicy",
+            component_definition="{{ include "polardbPg.componentDefinitionName" . }}",
+            phase!="Available"
+          } == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PolarDB-PG backup policy is unavailable
+          description: BackupPolicy {{ "{{ $labels.name }}" }} is not Available.
+      - alert: PolarDBPGBackupFailed
+        expr: |
+          max by (namespace, app_kubernetes_io_instance) (
+            kube_customresource_status_phase{
+              customresource_kind="Backup",
+              phase="Failed"
+            }
+            * on (namespace, backup_policy) group_left(component_definition)
+              kube_customresource_status_phase{
+                customresource_kind="BackupPolicy",
+                component_definition="{{ include "polardbPg.componentDefinitionName" . }}",
+                phase="Available"
+              }
+          ) == 1
+        for: {{ .Values.alertRule.backupFailureMinutes }}m
+        labels:
+          severity: critical
+        annotations:
+          summary: PolarDB-PG physical backup failed
+          description: PolarDB-PG cluster {{ "{{ $labels.app_kubernetes_io_instance }}" }} has a failed backup.
+      - alert: PolarDBPGRestoreDrillFailed
+        expr: |
+          max by (namespace, job_name) (
+            kube_job_status_failed{job_name=~"polardb-pg-restore-drill-.*"}
+          ) > 0
+        for: {{ .Values.alertRule.restoreDrillFailureMinutes }}m
+        labels:
+          severity: critical
+        annotations:
+          summary: PolarDB-PG restore drill failed
+          description: Restore drill Job {{ "{{ $labels.job_name }}" }} failed in namespace {{ "{{ $labels.namespace }}" }}.
+      - alert: PolarDBPGStackOperationFailed
+        expr: |
+          kube_customresource_status_phase{
+            customresource_kind="OpsRequest",
+            ops_definition=~"polardb-pg-stack-(switchover|rejoin|rebuild|fence)",
+            phase="Failed"
+          } == 1
+        for: {{ .Values.alertRule.opsFailureMinutes }}m
+        labels:
+          severity: critical
+        annotations:
+          summary: PolarDB-PG Stack operation failed
+          description: OpsRequest {{ "{{ $labels.name }}" }} failed in namespace {{ "{{ $labels.namespace }}" }}.
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "polardbPg.resourceName" (dict "suffix" "rules" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+{{ include "polardbPg.alertRuleSpec" . | indent 2 }}
+{{- end }}
+{{- if .Values.vmRule.enabled }}
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: {{ include "polardbPg.resourceName" (dict "suffix" "vmrules" "Values" .Values) }}
+  annotations:
+    helm.sh/resource-policy: keep
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "polardbPg.labels" . | nindent 4 }}
+spec:
+{{ include "polardbPg.alertRuleSpec" . | indent 2 }}
+{{- end }}

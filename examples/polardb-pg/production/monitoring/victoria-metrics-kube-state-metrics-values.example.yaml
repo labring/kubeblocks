@@ -1,0 +1,78 @@
+# Merge this into the victoria-metrics-k8s-stack Helm values in the target
+# cluster before enabling vmRule. The rules in the PolarDB-PG addon deliberately
+# use only these custom-resource and standard Job metrics.
+kube-state-metrics:
+  # customResourceState watches these resources cluster-wide. Grant only the
+  # list/watch permissions required to export their status metrics.
+  rbac:
+    extraRules:
+      - apiGroups: [dataprotection.kubeblocks.io]
+        resources: [backups, backuppolicies]
+        verbs: [list, watch]
+      - apiGroups: [apps.kubeblocks.io]
+        resources: [opsrequests]
+        verbs: [list, watch]
+  customResourceState:
+    enabled: true
+    config:
+      kind: CustomResourceStateMetrics
+      spec:
+        resources:
+          - groupVersionKind:
+              group: dataprotection.kubeblocks.io
+              version: v1alpha1
+              kind: BackupPolicy
+            metricNamePrefix: kube_customresource
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+              app_kubernetes_io_instance: [metadata, labels, app.kubernetes.io/instance]
+              backup_policy: [metadata, name]
+              component_definition: [metadata, labels, apps.kubeblocks.io/component-def-ref]
+            metrics:
+              - name: status_phase
+                help: KubeBlocks BackupPolicy phase.
+                each:
+                  type: StateSet
+                  stateSet:
+                    labelName: phase
+                    path: [status, phase]
+                    list: [Available, Unavailable, Failed]
+          - groupVersionKind:
+              group: dataprotection.kubeblocks.io
+              version: v1alpha1
+              kind: Backup
+            metricNamePrefix: kube_customresource
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+              app_kubernetes_io_instance: [metadata, labels, app.kubernetes.io/instance]
+              backup_policy: [metadata, labels, dataprotection.kubeblocks.io/backup-policy]
+            metrics:
+              - name: status_phase
+                help: KubeBlocks Backup phase.
+                each:
+                  type: StateSet
+                  stateSet:
+                    labelName: phase
+                    path: [status, phase]
+                    list: [New, Running, Completed, Failed]
+          - groupVersionKind:
+              group: apps.kubeblocks.io
+              version: v1alpha1
+              kind: OpsRequest
+            metricNamePrefix: kube_customresource
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+              type: [spec, type]
+              ops_definition: [spec, custom, opsDefinitionName]
+            metrics:
+              - name: status_phase
+                help: KubeBlocks OpsRequest phase.
+                each:
+                  type: StateSet
+                  stateSet:
+                    labelName: phase
+                    path: [status, phase]
+                    list: [Pending, Creating, Running, Succeed, Failed, Cancelling, Cancelled]
