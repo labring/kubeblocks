@@ -159,6 +159,34 @@ else
 endif
 endif
 
+.PHONY: build-polardb-addon-charts-image
+build-polardb-addon-charts-image: install-docker-buildx ## Build the KB 0.8 PolarDB add-on charts container image.
+ifneq ($(BUILDX_ENABLED), true)
+	$(DOCKER) build . $(DOCKER_BUILD_ARGS) --file $(DOCKERFILE_DIR)/Dockerfile-polardb-addon-charts --tag ${CHARTS_IMG}:${VERSION}
+else
+ifeq ($(TAG_LATEST), true)
+	$(DOCKER) buildx build . $(DOCKER_BUILD_ARGS) --file $(DOCKERFILE_DIR)/Dockerfile-polardb-addon-charts --platform $(BUILDX_PLATFORMS) --tag ${CHARTS_IMG}:latest
+else
+	$(DOCKER) buildx build . $(DOCKER_BUILD_ARGS) --file $(DOCKERFILE_DIR)/Dockerfile-polardb-addon-charts --platform $(BUILDX_PLATFORMS) --tag ${CHARTS_IMG}:${VERSION}
+endif
+endif
+
+.PHONY: push-polardb-addon-charts-image
+push-polardb-addon-charts-image: install-docker-buildx ## Push the KB 0.8 PolarDB add-on charts container image.
+ifneq ($(BUILDX_ENABLED), true)
+ifeq ($(TAG_LATEST), true)
+	$(DOCKER) push ${CHARTS_IMG}:latest
+else
+	$(DOCKER) push ${CHARTS_IMG}:${VERSION}
+endif
+else
+ifeq ($(TAG_LATEST), true)
+	$(DOCKER) buildx build . $(DOCKER_BUILD_ARGS) --file $(DOCKERFILE_DIR)/Dockerfile-polardb-addon-charts --platform $(BUILDX_PLATFORMS) --tag ${CHARTS_IMG}:latest --push
+else
+	$(DOCKER) buildx build . $(DOCKER_BUILD_ARGS) --file $(DOCKERFILE_DIR)/Dockerfile-polardb-addon-charts --platform $(BUILDX_PLATFORMS) --tag ${CHARTS_IMG}:${VERSION} --push
+endif
+endif
+
 .PHONY: build-datascript-image
 build-datascript-image: install-docker-buildx ## Build datascript container image.
 ifneq ($(BUILDX_ENABLED), true)
