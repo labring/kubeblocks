@@ -1,0 +1,22 @@
+# Preserve the validated KB 0.8 chart set and add the two local PolarDB charts.
+ARG BASE_CHARTS_IMAGE=ghcr.io/labring/kubeblocks-addon-charts:v0.8.2-wal-level-20260902
+
+FROM alpine/helm:3.12.1 AS builder
+
+COPY deploy/addons/polardb-postgresql /src/deploy/addons/polardb-postgresql
+COPY deploy/addons/polardb-mongo-compat /src/deploy/addons/polardb-mongo-compat
+
+RUN helm lint /src/deploy/addons/polardb-postgresql \
+ && helm lint /src/deploy/addons/polardb-mongo-compat \
+ && helm package /src/deploy/addons/polardb-postgresql --destination /charts \
+ && helm package /src/deploy/addons/polardb-mongo-compat --destination /charts \
+ && test -f /charts/polardb-postgresql-0.8.2.tgz \
+ && test -f /charts/polardb-mongo-compat-0.8.0.tgz
+
+FROM ${BASE_CHARTS_IMAGE} AS upstream
+
+FROM docker.io/alpine:edge AS dist
+
+COPY --from=upstream /charts /charts
+COPY --from=builder /charts /charts
+USER 65532:65532

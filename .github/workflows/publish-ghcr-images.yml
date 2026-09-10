@@ -7,6 +7,11 @@ on:
     tags-ignore:
       - "**"
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to publish in addition to the commit SHA
+        required: true
+        default: polardb-ha-kb08-label-fix
 
 # Required for pushing to ghcr.io with GITHUB_TOKEN.
 permissions:
@@ -26,8 +31,9 @@ jobs:
   publish:
     name: Build and Push (${{ matrix.image }})
     runs-on: ubuntu-latest
-    # Only publish on the repository's default branch (i.e. after PRs merge).
-    if: github.repository_owner == env.ORG && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # Push events are limited to the default branch. A maintainer can publish a
+    # release tag from a supported release branch with workflow_dispatch.
+    if: github.repository_owner == 'labring' && (github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +46,12 @@ jobs:
             context: .
           - image: kubeblocks-datascript
             dockerfile: ./docker/Dockerfile-datascript
+            context: .
+          - image: kubeblocks-dataprotection
+            dockerfile: ./docker/Dockerfile-dataprotection
+            context: .
+          - image: kubeblocks-addon-charts
+            dockerfile: ./docker/Dockerfile-polardb-addon-charts
             context: .
 
     steps:
@@ -65,6 +77,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}
           tags: |
+            type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.image_tag != '' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
 
