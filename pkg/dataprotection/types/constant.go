@@ -19,6 +19,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 package types
 
+import (
+	"crypto/sha256"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/util/validation"
+)
+
 const AppName = "kubeblocks-dataprotection"
 
 // config keys used in viper
@@ -131,3 +138,13 @@ const (
 	DataprotectionAPIGroup = "dataprotection.kubeblocks.io"
 	KopiaRepoFolderName    = "kopia"
 )
+
+// BackupPolicyLabelValue returns a stable Kubernetes label value for a BackupPolicy name.
+// BackupPolicy names are DNS subdomains and can exceed the label value limit.
+func BackupPolicyLabelValue(backupPolicyName string) string {
+	if len(validation.IsValidLabelValue(backupPolicyName)) == 0 {
+		return backupPolicyName
+	}
+	hash := sha256.Sum256([]byte(backupPolicyName))
+	return fmt.Sprintf("policy-%x", hash[:8])
+}

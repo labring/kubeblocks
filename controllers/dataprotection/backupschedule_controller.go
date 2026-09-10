@@ -212,13 +212,14 @@ func (r *BackupScheduleReconciler) handleSchedule(
 func (r *BackupScheduleReconciler) patchScheduleMetadata(
 	reqCtx intctrlutil.RequestCtx,
 	backupSchedule *dpv1alpha1.BackupSchedule) error {
-	if backupSchedule.Labels[dptypes.BackupPolicyLabelKey] == backupSchedule.Spec.BackupPolicyName {
+	backupPolicyLabelValue := dptypes.BackupPolicyLabelValue(backupSchedule.Spec.BackupPolicyName)
+	if backupSchedule.Labels[dptypes.BackupPolicyLabelKey] == backupPolicyLabelValue {
 		return nil
 	}
 	patch := client.MergeFrom(backupSchedule.DeepCopy())
 	if backupSchedule.Labels == nil {
 		backupSchedule.Labels = map[string]string{}
 	}
-	backupSchedule.Labels[dptypes.BackupPolicyLabelKey] = backupSchedule.Spec.BackupPolicyName
+	backupSchedule.Labels[dptypes.BackupPolicyLabelKey] = backupPolicyLabelValue
 	return r.Client.Patch(reqCtx.Ctx, backupSchedule, patch)
 }
