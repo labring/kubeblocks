@@ -41,18 +41,36 @@ jobs:
           - image: kubeblocks
             dockerfile: ./docker/Dockerfile
             context: .
+            tag_suffix: ""
+            sha_tag_prefix: ""
+            publish_latest: true
           - image: kubeblocks-tools
             dockerfile: ./docker/Dockerfile-tools
             context: .
+            tag_suffix: ""
+            sha_tag_prefix: ""
+            publish_latest: true
           - image: kubeblocks-datascript
             dockerfile: ./docker/Dockerfile-datascript
             context: .
+            tag_suffix: ""
+            sha_tag_prefix: ""
+            publish_latest: true
           - image: kubeblocks-dataprotection
             dockerfile: ./docker/Dockerfile-dataprotection
             context: .
-          - image: kubeblocks-addon-charts
+            tag_suffix: ""
+            sha_tag_prefix: ""
+            publish_latest: true
+          # The organization does not permit Actions to create a new GHCR
+          # package. Publish the local addon bundle into the existing
+          # kubeblocks package under dedicated tags instead.
+          - image: kubeblocks
             dockerfile: ./docker/Dockerfile-polardb-addon-charts
             context: .
+            tag_suffix: -addon-charts
+            sha_tag_prefix: addon-charts-
+            publish_latest: false
 
     steps:
       - name: Checkout
@@ -77,9 +95,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}
           tags: |
-            type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.image_tag != '' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short
+            type=raw,value=${{ inputs.image_tag }}${{ matrix.tag_suffix }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.image_tag != '' }}
+            type=raw,value=latest,enable=${{ matrix.publish_latest && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,prefix=${{ matrix.sha_tag_prefix }},format=short
 
       - name: Build and push
         uses: docker/build-push-action@v5
