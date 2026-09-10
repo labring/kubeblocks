@@ -234,7 +234,7 @@ func (r *RestoreManager) listCompletedFullBackups(reqCtx intctrlutil.RequestCtx,
 	}
 	if len(matchingLabels) == 1 {
 		// if only backupType label exists, need to match based on whether it is the same policy.
-		matchingLabels[dptypes.BackupPolicyLabelKey] = continuousBackup.Spec.BackupPolicyName
+		matchingLabels[dptypes.BackupPolicyLabelKey] = dptypes.BackupPolicyLabelValue(continuousBackup.Spec.BackupPolicyName)
 	}
 	backups := dpv1alpha1.BackupList{}
 	if err := cli.List(reqCtx.Ctx, &backups,

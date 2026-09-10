@@ -8,6 +8,10 @@
 - 集群可拉取 `docker.io/postgres:17`、`ghcr.io/ferretdb/ferretdb`、`docker.io/mongo:7.0` 和 mongo tools 镜像。
 - 以下命令在仓库根目录执行；示例命名空间是 `polardb-kb08-e2e`。生产请替换为独立业务命名空间和资源规格。
 
+DocumentDB 首次启动会安装扩展并创建 `documentdb_api` schema，耗时明显长于 PostgreSQL 开放 TCP 端口的时间。addon 的 startup/readiness probe 会等待该 schema 存在，因此在这段初始化期间 Pod 可能是 `Running` 但尚未 `Ready`；不要据此缩短或移除探针。
+
+生产环境必须将 `images.mongoTools` 覆盖为受控仓库中的 Linux/AMD64 或多架构 digest，例如 `registry.example.com/mongo@sha256:...`。`mongodump` 与 `mongorestore` 的 Backup/Restore Job 会在工作节点拉取该镜像，不能依赖 Docker Hub 的临时可达性或开发机导入的单一架构镜像。
+
 ## 安装 addon 与创建实例
 
 ```bash

@@ -478,7 +478,7 @@ func (r *BackupReconciler) checkIsCompletedDuringRunning(reqCtx intctrlutil.Requ
 	request *dpbackup.Request) (bool, error) {
 	backupScheduleList := &dpv1alpha1.BackupScheduleList{}
 	if err := r.Client.List(reqCtx.Ctx, backupScheduleList, client.MatchingLabels{
-		dptypes.BackupPolicyLabelKey: request.Backup.Spec.BackupPolicyName,
+		dptypes.BackupPolicyLabelKey: dptypes.BackupPolicyLabelValue(request.Backup.Spec.BackupPolicyName),
 	}); err != nil {
 		return false, err
 	}
@@ -624,7 +624,7 @@ func PatchBackupObjectMeta(
 
 	request.Labels[constant.AppManagedByLabelKey] = dptypes.AppName
 	request.Labels[dptypes.BackupTypeLabelKey] = request.GetBackupType()
-	request.Labels[dptypes.BackupPolicyLabelKey] = request.Spec.BackupPolicyName
+	request.Labels[dptypes.BackupPolicyLabelKey] = dptypes.BackupPolicyLabelValue(request.Spec.BackupPolicyName)
 	// wait for the backup repo controller to prepare the essential resource.
 	wait := false
 	if request.BackupRepo != nil {

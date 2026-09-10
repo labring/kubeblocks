@@ -67,15 +67,30 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /var/lib/postgresql/data
+        startupProbe:
+          exec:
+            command:
+              - bash
+              - -ec
+              - |
+                PGPASSWORD="${POSTGRES_PASSWORD}" psql -w -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atqc \
+                  "SELECT 1 FROM pg_namespace WHERE nspname = 'documentdb_api'" | grep -qx 1
+          failureThreshold: 120
+          periodSeconds: 5
+          timeoutSeconds: 3
         readinessProbe:
-          tcpSocket:
-            port: postgres
+          exec:
+            command:
+              - bash
+              - -ec
+              - |
+                PGPASSWORD="${POSTGRES_PASSWORD}" psql -w -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atqc \
+                  "SELECT 1 FROM pg_namespace WHERE nspname = 'documentdb_api'" | grep -qx 1
           periodSeconds: 5
           timeoutSeconds: 3
         livenessProbe:
           tcpSocket:
             port: postgres
-          initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 3
 ---
