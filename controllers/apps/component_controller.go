@@ -44,6 +44,7 @@ import (
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
+	"github.com/apecloud/kubeblocks/controllers/apps/operations"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/multicluster"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
@@ -96,6 +97,8 @@ type ComponentReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
+
+// +kubebuilder:rbac:groups=apps.kubeblocks.io,resources=opsrequests,verbs=get;list;watch;create
 
 // read only + watch access
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
@@ -202,11 +205,28 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Execute stage
 	// errBuild not nil means build stage partial success or validation error
 	// execute the plan first, delay error handling
-	if errExec := plan.Execute(); errExec != nil {
+	errExec := plan.Execute()
+
+	// Evaluate auto-failover even when plan build/execute failed. A NotReady
+	// primary is exactly when later transformers are most likely to error,
+	// and a stale RequeueAfter from a conflict must not skip the check.
+	var after time.Duration
+	var errFailover error
+	if c, ok := planBuilder.(*componentPlanBuilder); ok {
+		after, _, errFailover = r.reconcileMongoDBAutoFailover(ctx, c.transCtx)
+	}
+
+	if errExec != nil {
 		return requeueError(errExec)
 	}
 	if errBuild != nil {
 		return requeueError(errBuild)
+	}
+	if errFailover != nil {
+		return requeueError(errFailover)
+	}
+	if after > 0 {
+		return intctrlutil.RequeueAfter(after, reqCtx.Log, "waiting to re-evaluate MongoDB auto-failover")
 	}
 	return intctrlutil.Reconciled()
 }
@@ -235,6 +255,8 @@ func (r *ComponentReconciler) setupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&dpv1alpha1.Backup{}).
 		Owns(&dpv1alpha1.Restore{}).
+		Watches(&appsv1alpha1.OpsRequest{}, handler.EnqueueRequestsFromMapFunc(r.autoFailoverOpsRequestEventHandler)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.filterComponentResources),
@@ -264,10 +286,12 @@ func (r *ComponentReconciler) setupWithMultiClusterManager(mgr ctrl.Manager, mul
 		Owns(&workloads.InstanceSet{}).
 		Owns(&dpv1alpha1.Backup{}).
 		Owns(&dpv1alpha1.Restore{}).
+		Watches(&appsv1alpha1.OpsRequest{}, handler.EnqueueRequestsFromMapFunc(r.autoFailoverOpsRequestEventHandler)).
 		Watches(&appsv1alpha1.Configuration{}, handler.EnqueueRequestsFromMapFunc(r.configurationEventHandler))
 
 	eventHandler := handler.EnqueueRequestsFromMapFunc(r.filterComponentResources)
 	multiClusterMgr.Watch(b, &corev1.Service{}, eventHandler).
+		Watch(b, &corev1.Pod{}, eventHandler).
 		Watch(b, &corev1.Secret{}, eventHandler).
 		Watch(b, &corev1.ConfigMap{}, eventHandler).
 		Watch(b, &corev1.PersistentVolumeClaim{}, eventHandler).
@@ -336,6 +360,29 @@ func (r *ComponentReconciler) filterComponentResources(ctx context.Context, obj 
 			},
 		},
 	}
+}
+
+func (r *ComponentReconciler) autoFailoverOpsRequestEventHandler(_ context.Context, obj client.Object) []reconcile.Request {
+	ops, ok := obj.(*appsv1alpha1.OpsRequest)
+	if !ok ||
+		ops.Annotations[operations.AutoFailoverAnnotation] != operations.AutoFailoverAnnotationValue ||
+		ops.Spec.Type != appsv1alpha1.SwitchoverType {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(ops.Spec.SwitchoverList))
+	for _, switchover := range ops.Spec.SwitchoverList {
+		if switchover.GetComponentName() == "" {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: ops.Namespace,
+			Name: constant.GenerateClusterComponentName(
+				ops.Spec.GetClusterName(),
+				switchover.GetComponentName(),
+			),
+		}})
+	}
+	return requests
 }
 
 func (r *ComponentReconciler) configurationEventHandler(_ context.Context, obj client.Object) []reconcile.Request {

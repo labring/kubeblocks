@@ -21,9 +21,11 @@ package operations
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	batchv1 "k8s.io/api/batch/v1"
@@ -37,6 +39,7 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/instanceset"
+	"github.com/apecloud/kubeblocks/pkg/controller/multicluster"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	"github.com/apecloud/kubeblocks/pkg/dataprotection/utils"
 )
@@ -46,6 +49,16 @@ const (
 	OpsReasonForSkipSwitchover = "SkipSwitchover"
 
 	KBSwitchoverCandidateInstanceForAnyPod = "*"
+
+	AutoFailoverAnnotation                      = "kubeblocks.io/auto-failover"
+	AutoFailoverEpochAnnotation                 = "kubeblocks.io/auto-failover-epoch"
+	AutoFailoverAttemptAnnotation               = "kubeblocks.io/auto-failover-attempt"
+	AutoFailoverOldPrimaryPodAnnotation         = "kubeblocks.io/auto-failover-old-primary-pod"
+	AutoFailoverOldPrimaryUIDAnnotation         = "kubeblocks.io/auto-failover-old-primary-uid"
+	AutoFailoverNotReadySinceAnnotation         = "kubeblocks.io/auto-failover-not-ready-since"
+	AutoFailoverAnnotationValue                 = "true"
+	AutoFailoverOpsTimeoutSeconds         int32 = 300
+	autoFailoverValidationRequeueInterval       = time.Second
 
 	KBJobTTLSecondsAfterFinished  = 5
 	KBSwitchoverJobLabelKey       = "kubeblocks.io/switchover-job"
@@ -70,6 +83,53 @@ const (
 	KBSwitchoverLeaderPodName = "KB_LEADER_POD_NAME"
 	KBSwitchoverLeaderPodFqdn = "KB_LEADER_POD_FQDN"
 )
+
+type AutoFailoverPrimarySelection int
+
+const (
+	AutoFailoverPrimaryNotFound AutoFailoverPrimarySelection = iota
+	AutoFailoverPrimaryCurrent
+	AutoFailoverPrimaryLastKnown
+	AutoFailoverPrimaryAmbiguous
+)
+
+// SelectAutoFailoverPrimaryPod prefers the current role label and falls back
+// to the last role confirmed by the role event handler. The fallback keeps an
+// unavailable former primary identifiable after its local role probe clears
+// the live role label.
+func SelectAutoFailoverPrimaryPod(
+	pods []corev1.Pod,
+	targetRole string,
+) (*corev1.Pod, AutoFailoverPrimarySelection) {
+	var current []*corev1.Pod
+	for i := range pods {
+		if strings.EqualFold(pods[i].Labels[constant.RoleLabelKey], targetRole) {
+			current = append(current, &pods[i])
+		}
+	}
+	switch len(current) {
+	case 1:
+		return current[0], AutoFailoverPrimaryCurrent
+	case 0:
+	default:
+		return nil, AutoFailoverPrimaryAmbiguous
+	}
+
+	var lastKnown []*corev1.Pod
+	for i := range pods {
+		if strings.EqualFold(pods[i].Annotations[constant.LastKnownRoleAnnotationKey], targetRole) {
+			lastKnown = append(lastKnown, &pods[i])
+		}
+	}
+	switch len(lastKnown) {
+	case 1:
+		return lastKnown[0], AutoFailoverPrimaryLastKnown
+	case 0:
+		return nil, AutoFailoverPrimaryNotFound
+	default:
+		return nil, AutoFailoverPrimaryAmbiguous
+	}
+}
 
 // needDoSwitchover checks whether we need to perform a switchover.
 func needDoSwitchover(ctx context.Context,
@@ -106,16 +166,190 @@ func needDoSwitchover(ctx context.Context,
 	return true, nil
 }
 
+func validateAutoFailover(
+	ctx context.Context,
+	cli client.Client,
+	cluster *appsv1alpha1.Cluster,
+	opsRequest *appsv1alpha1.OpsRequest,
+	synthesizedComp *component.SynthesizedComponent,
+	switchover *appsv1alpha1.Switchover,
+) (bool, bool, *corev1.Pod, error) {
+	if !isAutoFailoverOpsRequest(opsRequest) {
+		return false, false, nil, nil
+	}
+	if switchover == nil || switchover.InstanceName != KBSwitchoverCandidateInstanceForAnyPod {
+		return true, false, nil, intctrlutil.NewFatalError(
+			"automatic failover requires a wildcard switchover",
+		)
+	}
+
+	oldPrimaryName := opsRequest.Annotations[AutoFailoverOldPrimaryPodAnnotation]
+	oldPrimaryUID := opsRequest.Annotations[AutoFailoverOldPrimaryUIDAnnotation]
+	notReadySinceValue := opsRequest.Annotations[AutoFailoverNotReadySinceAnnotation]
+	if oldPrimaryName == "" || oldPrimaryUID == "" || notReadySinceValue == "" {
+		return true, false, nil, intctrlutil.NewFatalError(
+			"automatic failover validation annotations are incomplete",
+		)
+	}
+	notReadySince, err := time.Parse(time.RFC3339Nano, notReadySinceValue)
+	if err != nil {
+		return true, false, nil, intctrlutil.NewFatalError(
+			fmt.Sprintf("invalid automatic failover NotReady timestamp: %v", err),
+		)
+	}
+	if remainingOpsRequestDuration(opsRequest) <= 0 {
+		return true, false, nil, intctrlutil.NewFatalError(
+			"automatic failover timed out",
+		)
+	}
+
+	targetRole, err := serviceableNWritableRole(*synthesizedComp)
+	if err != nil {
+		return true, false, nil, intctrlutil.NewFatalError(err.Error())
+	}
+	dataCtx := ctx
+	if placement := cluster.Annotations[constant.KBAppMultiClusterPlacementKey]; placement != "" {
+		dataCtx = multicluster.IntoContext(ctx, placement)
+	}
+	podList := &corev1.PodList{}
+	labels := constant.GetComponentWellKnownLabels(cluster.Name, synthesizedComp.Name)
+	if err := cli.List(
+		dataCtx,
+		podList,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(labels),
+		multicluster.InDataContext(),
+	); err != nil {
+		return true, false, nil, err
+	}
+	primaryPod, selection := SelectAutoFailoverPrimaryPod(podList.Items, targetRole)
+	switch selection {
+	case AutoFailoverPrimaryNotFound:
+		return true, false, nil, autoFailoverValidationWaitError(
+			opsRequest,
+			"waiting for the current primary role report",
+		)
+	case AutoFailoverPrimaryAmbiguous:
+		return true, false, nil, autoFailoverValidationWaitError(
+			opsRequest,
+			"waiting for primary role reports to converge",
+		)
+	}
+
+	if primaryPod.Name != oldPrimaryName || string(primaryPod.UID) != oldPrimaryUID {
+		if primaryPod.DeletionTimestamp != nil || primaryPod.Status.Phase != corev1.PodRunning {
+			return true, false, nil, autoFailoverValidationWaitError(
+				opsRequest,
+				"waiting for the new primary pod to run",
+			)
+		}
+		readyCondition := intctrlutil.GetPodCondition(&primaryPod.Status, corev1.PodReady)
+		if readyCondition == nil || readyCondition.Status != corev1.ConditionTrue {
+			return true, false, nil, autoFailoverValidationWaitError(
+				opsRequest,
+				"waiting for the new primary pod to become ready",
+			)
+		}
+		// A different pod holding the role while ready is what the primary
+		// service publishes as its endpoint, so MongoDB, role reporting and
+		// routing have converged. Do not step down the replacement primary.
+		return true, false, nil, nil
+	}
+	if primaryPod.DeletionTimestamp != nil || primaryPod.Status.Phase != corev1.PodRunning {
+		// The old primary can no longer run the step-down command. Keep the
+		// request active while MongoDB's majority election and role reporting
+		// converge instead of declaring success without observing a new primary.
+		return true, false, nil, autoFailoverValidationWaitError(
+			opsRequest,
+			"waiting for a new primary after the old primary stopped",
+		)
+	}
+	readyCondition := intctrlutil.GetPodCondition(&primaryPod.Status, corev1.PodReady)
+	if readyCondition == nil ||
+		(readyCondition.Status != corev1.ConditionFalse && readyCondition.Status != corev1.ConditionUnknown) {
+		return true, false, nil, nil
+	}
+	// The transition timestamp may be rewritten by the node controller after a
+	// node loss, so only verify it for the explicit False state.
+	if readyCondition.Status == corev1.ConditionFalse && !readyCondition.LastTransitionTime.Time.Equal(notReadySince) {
+		return true, false, nil, nil
+	}
+
+	// The old primary is still the only pod holding the role and it is not
+	// ready, so the primary service has no endpoint left. Step it down.
+	return true, true, primaryPod, nil
+}
+
+func isAutoFailoverOpsRequest(opsRequest *appsv1alpha1.OpsRequest) bool {
+	return opsRequest != nil &&
+		opsRequest.Annotations[AutoFailoverAnnotation] == AutoFailoverAnnotationValue
+}
+
+func autoFailoverValidationWaitError(opsRequest *appsv1alpha1.OpsRequest, message string) error {
+	remaining := remainingOpsRequestDuration(opsRequest)
+	if remaining <= 0 {
+		return intctrlutil.NewFatalError(message + " before the automatic failover timeout")
+	}
+	requeueAfter := autoFailoverValidationRequeueInterval
+	if remaining < requeueAfter {
+		requeueAfter = remaining
+	}
+	return intctrlutil.NewRequeueError(requeueAfter, message)
+}
+
+func remainingOpsRequestDuration(opsRequest *appsv1alpha1.OpsRequest) time.Duration {
+	if opsRequest == nil || opsRequest.Spec.TimeoutSeconds == nil || *opsRequest.Spec.TimeoutSeconds <= 0 {
+		return 0
+	}
+	remaining := time.Duration(*opsRequest.Spec.TimeoutSeconds) * time.Second
+	startedAt := opsRequest.Status.StartTimestamp.Time
+	if startedAt.IsZero() {
+		startedAt = opsRequest.CreationTimestamp.Time
+	}
+	if !startedAt.IsZero() {
+		remaining -= time.Since(startedAt)
+	}
+	return remaining
+}
+
+func remainingOpsRequestSeconds(opsRequest *appsv1alpha1.OpsRequest) int64 {
+	remaining := remainingOpsRequestDuration(opsRequest)
+	if remaining <= 0 {
+		return 0
+	}
+	return int64((remaining + time.Second - 1) / time.Second)
+}
+
 // createSwitchoverJob creates a switchover job to do switchover.
 func createSwitchoverJob(reqCtx intctrlutil.RequestCtx,
 	cli client.Client,
 	cluster *appsv1alpha1.Cluster,
 	opsRequest *appsv1alpha1.OpsRequest,
 	synthesizedComp *component.SynthesizedComponent,
-	switchover *appsv1alpha1.Switchover) error {
-	switchoverJob, err := renderSwitchoverCmdJob(reqCtx.Ctx, cli, cluster, synthesizedComp, switchover)
+	switchover *appsv1alpha1.Switchover,
+	primaryPod ...*corev1.Pod) error {
+	switchoverJob, err := renderSwitchoverCmdJob(
+		reqCtx.Ctx,
+		cli,
+		cluster,
+		synthesizedComp,
+		switchover,
+		primaryPod...,
+	)
 	if err != nil {
 		return err
+	}
+	if isAutoFailoverOpsRequest(opsRequest) {
+		switchoverJob.Name = genSwitchoverJobNameForOpsRequest(
+			cluster.Name,
+			synthesizedComp.Name,
+			cluster.Generation,
+			opsRequest,
+		)
+		switchoverJob.Labels[constant.OpsRequestNameLabelKey] = opsRequest.Name
+		if deadline := remainingOpsRequestSeconds(opsRequest); deadline > 0 {
+			switchoverJob.Spec.ActiveDeadlineSeconds = pointer.Int64(deadline)
+		}
 	}
 	// check the current generation switchoverJob whether exist
 	key := types.NamespacedName{Namespace: cluster.Namespace, Name: switchoverJob.Name}
@@ -192,16 +426,23 @@ func renderSwitchoverCmdJob(ctx context.Context,
 	cli client.Client,
 	cluster *appsv1alpha1.Cluster,
 	synthesizedComp *component.SynthesizedComponent,
-	switchover *appsv1alpha1.Switchover) (*batchv1.Job, error) {
+	switchover *appsv1alpha1.Switchover,
+	primaryPod ...*corev1.Pod) (*batchv1.Job, error) {
 	if synthesizedComp.LifecycleActions == nil || synthesizedComp.LifecycleActions.Switchover == nil || switchover == nil {
 		return nil, errors.New("switchover spec not found")
 	}
-	pod, err := getServiceableNWritablePod(ctx, cli, *cluster, *synthesizedComp)
-	if err != nil {
-		return nil, err
-	}
-	if pod == nil {
-		return nil, errors.New("serviceable and writable pod not found")
+	var pod *corev1.Pod
+	if len(primaryPod) > 0 && primaryPod[0] != nil {
+		pod = primaryPod[0]
+	} else {
+		var err error
+		pod, err = getServiceableNWritablePod(ctx, cli, *cluster, *synthesizedComp)
+		if err != nil {
+			return nil, err
+		}
+		if pod == nil {
+			return nil, errors.New("serviceable and writable pod not found")
+		}
 	}
 
 	renderJobPodVolumes := func(scriptSpecSelectors []appsv1alpha1.ScriptSpecSelector) ([]corev1.Volume, []corev1.VolumeMount) {
@@ -305,7 +546,7 @@ func renderSwitchoverCmdJob(ctx context.Context,
 		return job, nil
 	}
 
-	switchoverEnvs, err := buildSwitchoverEnvs(ctx, cli, cluster, synthesizedComp, switchover)
+	switchoverEnvs, err := buildSwitchoverEnvs(ctx, cli, cluster, synthesizedComp, switchover, pod)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +560,19 @@ func renderSwitchoverCmdJob(ctx context.Context,
 // genSwitchoverJobName generates the switchover job name.
 func genSwitchoverJobName(clusterName, componentName string, generation int64) string {
 	return fmt.Sprintf("%s-%s-%s-%d", KBSwitchoverJobNamePrefix, clusterName, componentName, generation)
+}
+
+func genSwitchoverJobNameForOpsRequest(
+	clusterName string,
+	componentName string,
+	generation int64,
+	opsRequest *appsv1alpha1.OpsRequest,
+) string {
+	if !isAutoFailoverOpsRequest(opsRequest) {
+		return genSwitchoverJobName(clusterName, componentName, generation)
+	}
+	sum := sha256.Sum256([]byte(opsRequest.Name))
+	return fmt.Sprintf("%s-%x", KBSwitchoverJobNamePrefix, sum[:8])
 }
 
 // getSwitchoverCmdJobLabel gets the labels for job that execute the switchover commands.
@@ -360,7 +614,8 @@ func buildSwitchoverEnvs(ctx context.Context,
 	cli client.Client,
 	cluster *appsv1alpha1.Cluster,
 	synthesizeComp *component.SynthesizedComponent,
-	switchover *appsv1alpha1.Switchover) ([]corev1.EnvVar, error) {
+	switchover *appsv1alpha1.Switchover,
+	primaryPod ...*corev1.Pod) ([]corev1.EnvVar, error) {
 	if synthesizeComp == nil || synthesizeComp.LifecycleActions == nil ||
 		synthesizeComp.LifecycleActions.Switchover == nil || switchover == nil {
 		return nil, errors.New("switchover spec not found")
@@ -385,7 +640,7 @@ func buildSwitchoverEnvs(ctx context.Context,
 	}
 
 	// inject the old primary info into the environment variable
-	workloadEnvs, err := buildSwitchoverWorkloadEnvs(ctx, cli, cluster, synthesizeComp)
+	workloadEnvs, err := buildSwitchoverWorkloadEnvs(ctx, cli, cluster, synthesizeComp, primaryPod...)
 	if err != nil {
 		return nil, err
 	}
@@ -416,14 +671,21 @@ func replaceSwitchoverConnCredentialEnv(switchoverSpec *appsv1alpha1.ComponentSw
 func buildSwitchoverWorkloadEnvs(ctx context.Context,
 	cli client.Client,
 	cluster *appsv1alpha1.Cluster,
-	synthesizeComp *component.SynthesizedComponent) ([]corev1.EnvVar, error) {
+	synthesizeComp *component.SynthesizedComponent,
+	primaryPod ...*corev1.Pod) ([]corev1.EnvVar, error) {
 	var workloadEnvs []corev1.EnvVar
-	pod, err := getServiceableNWritablePod(ctx, cli, *cluster, *synthesizeComp)
-	if err != nil {
-		return nil, err
-	}
-	if pod == nil {
-		return nil, errors.New("serviceable and writable pod not found")
+	var pod *corev1.Pod
+	if len(primaryPod) > 0 && primaryPod[0] != nil {
+		pod = primaryPod[0]
+	} else {
+		var err error
+		pod, err = getServiceableNWritablePod(ctx, cli, *cluster, *synthesizeComp)
+		if err != nil {
+			return nil, err
+		}
+		if pod == nil {
+			return nil, errors.New("serviceable and writable pod not found")
+		}
 	}
 	svcName := strings.Join([]string{cluster.Name, synthesizeComp.Name, "headless"}, "-")
 
@@ -477,21 +739,9 @@ func buildSwitchoverWorkloadEnvs(ctx context.Context,
 
 // getServiceableNWritablePod returns the serviceable and writable pod of the component.
 func getServiceableNWritablePod(ctx context.Context, cli client.Client, cluster appsv1alpha1.Cluster, synthesizeComp component.SynthesizedComponent) (*corev1.Pod, error) {
-	if synthesizeComp.Roles == nil {
-		return nil, errors.New("component does not support switchover")
-	}
-
-	targetRole := ""
-	for _, role := range synthesizeComp.Roles {
-		if role.Serviceable && role.Writable {
-			if targetRole != "" {
-				return nil, errors.New("component has more than role is serviceable and writable, does not support switchover")
-			}
-			targetRole = role.Name
-		}
-	}
-	if targetRole == "" {
-		return nil, errors.New("component has no role is serviceable and writable, does not support switchover")
+	targetRole, err := serviceableNWritableRole(synthesizeComp)
+	if err != nil {
+		return nil, err
 	}
 
 	podList, err := component.GetComponentPodListWithRole(ctx, cli, cluster, synthesizeComp.Name, targetRole)
@@ -502,4 +752,24 @@ func getServiceableNWritablePod(ctx context.Context, cli client.Client, cluster 
 		return nil, errors.New("component pod list is empty or has more than one serviceable and writable pod")
 	}
 	return &podList.Items[0], nil
+}
+
+func serviceableNWritableRole(synthesizeComp component.SynthesizedComponent) (string, error) {
+	if synthesizeComp.Roles == nil {
+		return "", errors.New("component does not support switchover")
+	}
+	targetRole := ""
+	for _, role := range synthesizeComp.Roles {
+		if !role.Serviceable || !role.Writable {
+			continue
+		}
+		if targetRole != "" {
+			return "", errors.New("component has more than one serviceable and writable role, does not support switchover")
+		}
+		targetRole = role.Name
+	}
+	if targetRole == "" {
+		return "", errors.New("component has no serviceable and writable role, does not support switchover")
+	}
+	return targetRole, nil
 }

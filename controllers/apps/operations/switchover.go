@@ -68,13 +68,25 @@ func (r switchoverOpsHandler) ActionStartedCondition(reqCtx intctrlutil.RequestC
 		if err != nil {
 			return nil, err
 		}
-		pod, err := getServiceableNWritablePod(reqCtx.Ctx, cli, *opsRes.Cluster, *synthesizedComp)
-		if err != nil {
-			return nil, err
+		oldPrimary := ""
+		if opsRes.OpsRequest.Annotations[AutoFailoverAnnotation] == AutoFailoverAnnotationValue {
+			oldPrimary = opsRes.OpsRequest.Annotations[AutoFailoverOldPrimaryPodAnnotation]
+			if oldPrimary == "" {
+				return nil, errors.New("automatic failover old primary annotation is missing")
+			}
+		} else {
+			pod, err := getServiceableNWritablePod(reqCtx.Ctx, cli, *opsRes.Cluster, *synthesizedComp)
+			if err != nil {
+				return nil, err
+			}
+			if pod == nil {
+				return nil, errors.New("serviceable and writable pod not found")
+			}
+			oldPrimary = pod.Name
 		}
 		switchoverMessageMap[switchover.GetComponentName()] = SwitchoverMessage{
 			Switchover: switchover,
-			OldPrimary: pod.Name,
+			OldPrimary: oldPrimary,
 			Cluster:    opsRes.Cluster.Name,
 		}
 	}
@@ -133,9 +145,22 @@ func doSwitchoverComponents(reqCtx intctrlutil.RequestCtx, cli client.Client, op
 		if err != nil {
 			return err
 		}
-		needSwitchover, err := needDoSwitchover(reqCtx.Ctx, cli, opsRes.Cluster, synthesizedComp, &switchover)
+		automatic, needSwitchover, primaryPod, err := validateAutoFailover(
+			reqCtx.Ctx,
+			cli,
+			opsRes.Cluster,
+			opsRequest,
+			synthesizedComp,
+			&switchover,
+		)
 		if err != nil {
 			return err
+		}
+		if !automatic {
+			needSwitchover, err = needDoSwitchover(reqCtx.Ctx, cli, opsRes.Cluster, synthesizedComp, &switchover)
+			if err != nil {
+				return err
+			}
 		}
 		compName := switchover.GetComponentName()
 		if !needSwitchover {
@@ -152,7 +177,15 @@ func doSwitchoverComponents(reqCtx intctrlutil.RequestCtx, cli client.Client, op
 				ProgressDetails: []appsv1alpha1.ProgressStatusDetail{},
 			}
 		}
-		if err := createSwitchoverJob(reqCtx, cli, opsRes.Cluster, opsRes.OpsRequest, synthesizedComp, &switchover); err != nil {
+		if err := createSwitchoverJob(
+			reqCtx,
+			cli,
+			opsRes.Cluster,
+			opsRes.OpsRequest,
+			synthesizedComp,
+			&switchover,
+			primaryPod,
+		); err != nil {
 			return err
 		}
 	}
@@ -200,7 +233,12 @@ func handleSwitchoverProgress(reqCtx intctrlutil.RequestCtx, cli client.Client, 
 			return 0, 0, 0, errBuild
 		}
 		// check the current component switchoverJob whether succeed
-		jobName := genSwitchoverJobName(opsRes.Cluster.Name, synthesizedComp.Name, switchoverCondition.ObservedGeneration)
+		jobName := genSwitchoverJobNameForOpsRequest(
+			opsRes.Cluster.Name,
+			synthesizedComp.Name,
+			switchoverCondition.ObservedGeneration,
+			opsRequest,
+		)
 		checkJobProcessDetail := appsv1alpha1.ProgressStatusDetail{
 			ObjectKey: getProgressObjectKey(KBSwitchoverCheckJobKey, jobName),
 			Status:    appsv1alpha1.ProcessingProgressStatus,
