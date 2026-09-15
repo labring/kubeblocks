@@ -10,7 +10,7 @@ RUN helm lint /src/deploy/addons/polardb-postgresql \
  && helm lint /src/deploy/addons/polardb-mongo-compat \
  && helm package /src/deploy/addons/polardb-postgresql --destination /charts \
  && helm package /src/deploy/addons/polardb-mongo-compat --destination /charts \
- && test -f /charts/polardb-postgresql-0.8.2.tgz \
+ && test -f /charts/polardb-postgresql-0.8.3.tgz \
  && test -f /charts/polardb-mongo-compat-0.8.0.tgz
 
 FROM ${BASE_CHARTS_IMAGE} AS upstream

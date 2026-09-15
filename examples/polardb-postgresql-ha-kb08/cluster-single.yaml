@@ -1,7 +1,7 @@
 apiVersion: apps.kubeblocks.io/v1alpha1
 kind: Cluster
 metadata:
-  name: pg-ha
+  name: pg-single
   namespace: polardb-pg-ha-kb08
 spec:
   clusterDefinitionRef: polardb-postgresql-ha-kb08
@@ -14,7 +14,7 @@ spec:
   componentSpecs:
     - name: postgresql
       componentDef: polardb-pg-ha-v2
-      replicas: 2
+      replicas: 1
       resources:
         requests:
           cpu: "1"

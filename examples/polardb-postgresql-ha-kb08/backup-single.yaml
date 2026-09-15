@@ -1,9 +1,9 @@
 apiVersion: dataprotection.kubeblocks.io/v1alpha1
 kind: Backup
 metadata:
-  name: pg-ha-backup
+  name: pg-single-backup
   namespace: polardb-pg-ha-kb08
 spec:
   backupMethod: pg-basebackup
-  backupPolicyName: pg-ha-polardb-pg-ha-v2-backup-policy
+  backupPolicyName: pg-single-polardb-pg-ha-v2-backup-policy
   deletionPolicy: Delete

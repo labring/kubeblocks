@@ -29,7 +29,6 @@ import (
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
-	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/common"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/graph"
@@ -319,13 +318,14 @@ func (r *clusterBackupPolicyTransformer) syncRoleLabelSelector(target *dpv1alpha
 }
 
 func (r *clusterBackupPolicyTransformer) getCompReplicas() int32 {
-	rsm := &workloads.ReplicatedStateMachine{}
 	compSpec := r.getClusterComponentSpec()
-	rsmName := fmt.Sprintf("%s-%s", r.Cluster.Name, compSpec.Name)
-	if err := r.Client.Get(r.Context, client.ObjectKey{Name: rsmName, Namespace: r.Cluster.Namespace}, rsm); err != nil {
-		return compSpec.Replicas
+	if compSpec == nil {
+		return 0
 	}
-	return *rsm.Spec.Replicas
+	// The RSM replica count is updated after the Cluster reconcile that handles
+	// horizontal scale. Use the desired Cluster spec so a scale from one replica
+	// to two immediately restores a role-specific backup target.
+	return compSpec.Replicas
 }
 
 // buildBackupPolicy builds a new backup policy by the backup policy template.
@@ -347,6 +347,7 @@ func (r *clusterBackupPolicyTransformer) buildBackupPolicy(comp *appsv1alpha1.Cl
 	}
 	bpSpec.PathPrefix = buildBackupPathPrefix(cluster, comp.Name)
 	bpSpec.Target = r.buildBackupTarget(r.backupPolicy.Target, comp)
+	r.syncRoleLabelSelector(bpSpec.Target, r.backupPolicy.Target.Role)
 	bpSpec.BackoffLimit = r.backupPolicy.BackoffLimit
 	backupPolicy.Spec = bpSpec
 	return backupPolicy

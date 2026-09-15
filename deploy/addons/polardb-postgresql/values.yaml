@@ -146,12 +146,12 @@ logConfigs:
 enabledClusterVersions: [ ]
 
 ha:
-  # ComponentDefinitions are immutable in KubeBlocks 0.8. Increment this name
-  # for an incompatible HA implementation; do not update an existing definition
-  # in place.
+  # ComponentDefinitions are immutable in KubeBlocks 0.8. v2 preserves v1
+  # clusters while allowing new clusters to start with one replica and scale
+  # to a Patroni primary/standby topology later.
   componentDefinition:
     # KB 0.8 validates componentDef references at 22 characters or fewer.
-    name: polardb-pg-ha-v1
+    name: polardb-pg-ha-v2
   switchover:
     # Only replicas at or below this Patroni-reported byte lag can be selected
     # automatically. Keep the production default at zero to avoid an RPO gap.

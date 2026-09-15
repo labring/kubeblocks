@@ -17,7 +17,7 @@ spec:
   serviceKind: postgresql
   serviceVersion: 12.15.0
   replicasLimit:
-    minReplicas: 2
+    minReplicas: 1
     maxReplicas: 3
   services:
     - name: postgresql
