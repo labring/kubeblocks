@@ -32,7 +32,7 @@ Patroni 持有 PostgreSQL 的 leader election 与复制状态。ComponentDefinit
 | `Switchover` | 0.8 原生 `OpsRequest type=Switchover` | 候选者的可用性由 Patroni API 判断 |
 | offline/rejoin | Custom Ops 调 `/restart` | 没有 0.9 offline-instance API |
 | `RebuildInstance` | Custom Ops 调 `/reinitialize` | 仅重建可访问 standby；不是 InstanceSet 临时扩容语义 |
-| `pg-basebackup` / restore drill | 0.8 ActionSet、BackupPolicyTemplate、Backup、Restore OpsRequest | 备份目标需要健康 secondary |
+| `pg-basebackup` / restore drill | 0.8 ActionSet、BackupPolicyTemplate、Backup、Restore OpsRequest | 多副本时选择健康 secondary；单副本时由 0.8 controller 自动回退到唯一实例 |
 | 自动复制健康重建 | 未原样移植 | 0.9 使用 InstanceSet；0.8 为 RSM，不能无验证复制控制器 |
 
 ## 资源与运维流程
@@ -43,7 +43,7 @@ Patroni 持有 PostgreSQL 的 leader election 与复制状态。ComponentDefinit
 4. Rejoin Job 拒绝 primary，调用 target standby 的 `/restart`，轮询 `/patroni` 至 `role=replica` 且 `state=running`。Patroni 重启时可能主动断开 HTTP 请求，因此请求连接中断不直接判失败，最终状态轮询才是完成依据。
 5. Rebuild Job 除相同 primary 防护外要求 `CONFIRM_REBUILD=true`，调用 `/reinitialize`，从当前 primary 重新构造 target standby 数据。
 6. OpsRequest 进入 `Succeed`、`Failed` 或 `Cancelled` 时，controller 会幂等清理 Cluster 的 operation queue。该兜底覆盖 Restore 已持久化终态但未及时释放队列的场景，避免后续备份、切换或维护操作永久 Pending。
-6. BackupPolicyTemplate 选择 secondary 运行物理 `pg_basebackup`，输出到 DataProtection BackupRepo；Restore OpsRequest 先恢复数据卷再创建目标 Cluster。
+6. BackupPolicyTemplate 在多副本时选择 secondary 运行物理 `pg_basebackup`；副本数为一时 0.8 controller 会移除 secondary selector，使用唯一实例。备份输出到 DataProtection BackupRepo；Restore OpsRequest 先恢复数据卷再创建目标 Cluster。
 7. manager 在创建 `kb*` 系统账户前查询已有系统账户，覆盖“Lorry 已创建但 controller 状态未写回”的重试窗口；新版 PostgreSQL Lorry 在 `42710 duplicate_object` 时更新该系统账户密码。二者保证重试、manager 重启与恢复后重新调谐不会卡在已存在角色上，普通用户仍保持“已存在即失败”的 API 语义。
 
 ## 不可省略的生产控制
