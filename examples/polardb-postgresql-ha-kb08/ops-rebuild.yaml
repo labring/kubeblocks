@@ -8,7 +8,7 @@ spec:
   type: Custom
   customSpec:
     componentName: postgresql
-    opsDefinitionRef: polardb-pg-ha-v2-rebuild
+    opsDefinitionRef: polardb-pg-ha-rebuild
     params:
       - TARGET_INSTANCE: pg-ha-postgresql-0
         CONFIRM_REBUILD: "true"

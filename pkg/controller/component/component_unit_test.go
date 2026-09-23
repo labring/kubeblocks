@@ -22,7 +22,7 @@ func TestBuildComponentAddsComponentDefinitionLabels(t *testing.T) {
 	}
 	compSpec := &appsv1alpha1.ClusterComponentSpec{
 		Name:         "postgresql",
-		ComponentDef: "polardb-pg-ha-v1",
+		ComponentDef: "polardb-pg-ha",
 		Replicas:     2,
 	}
 

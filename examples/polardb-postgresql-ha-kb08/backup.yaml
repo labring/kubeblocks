@@ -5,5 +5,5 @@ metadata:
   namespace: polardb-pg-ha-kb08
 spec:
   backupMethod: pg-basebackup
-  backupPolicyName: pg-ha-polardb-pg-ha-v2-backup-policy
+  backupPolicyName: pg-ha-polardb-pg-ha-backup-policy
   deletionPolicy: Delete

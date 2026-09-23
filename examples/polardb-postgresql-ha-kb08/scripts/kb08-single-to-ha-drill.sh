@@ -6,7 +6,7 @@ CLUSTER="${CLUSTER:-pg-single}"
 COMPONENT="${COMPONENT:-postgresql}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1200}"
 WITH_BACKUP="${WITH_BACKUP:-false}"
-BACKUP_POLICY="${BACKUP_POLICY:-${CLUSTER}-polardb-pg-ha-v2-backup-policy}"
+BACKUP_POLICY="${BACKUP_POLICY:-${CLUSTER}-polardb-pg-ha-backup-policy}"
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2

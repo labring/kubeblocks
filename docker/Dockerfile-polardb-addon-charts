@@ -5,12 +5,19 @@ FROM alpine/helm:3.12.1 AS builder
 
 COPY deploy/addons/polardb-postgresql /src/deploy/addons/polardb-postgresql
 COPY deploy/addons/polardb-mongo-compat /src/deploy/addons/polardb-mongo-compat
+COPY deploy/helm /src/deploy/helm
 
 RUN helm lint /src/deploy/addons/polardb-postgresql \
  && helm lint /src/deploy/addons/polardb-mongo-compat \
+ && helm template polardb-postgresql /src/deploy/addons/polardb-postgresql > /tmp/polardb-postgresql.yaml \
+ && grep -Fx '  name: polardb-pg-ha' /tmp/polardb-postgresql.yaml \
+ && ! grep -Fq 'polardb-pg-ha-v2' /tmp/polardb-postgresql.yaml \
+ && helm template kubeblocks /src/deploy/helm --show-only templates/addons/polardb-postgresql-addon.yaml > /tmp/polardb-postgresql-addon.yaml \
+ && grep -Fx '    addon.kubeblocks.io/version: 0.8.4' /tmp/polardb-postgresql-addon.yaml \
+ && grep -Fx '    chartLocationURL: file:///polardb-postgresql-0.8.4.tgz' /tmp/polardb-postgresql-addon.yaml \
  && helm package /src/deploy/addons/polardb-postgresql --destination /charts \
  && helm package /src/deploy/addons/polardb-mongo-compat --destination /charts \
- && test -f /charts/polardb-postgresql-0.8.3.tgz \
+ && test -f /charts/polardb-postgresql-0.8.4.tgz \
  && test -f /charts/polardb-mongo-compat-0.8.0.tgz
 
 FROM ${BASE_CHARTS_IMAGE} AS upstream
