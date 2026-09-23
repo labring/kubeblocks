@@ -13,7 +13,7 @@ spec:
     tenancy: SharedNode
   componentSpecs:
     - name: postgresql
-      componentDef: polardb-pg-ha-v2
+      componentDef: polardb-pg-ha
       replicas: 2
       resources:
         requests:

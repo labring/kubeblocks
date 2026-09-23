@@ -19,9 +19,9 @@
 helm upgrade --install kb-addon-polardb-postgresql deploy/addons/polardb-postgresql \
   -n kb-system --create-namespace
 
-kubectl get componentdefinition polardb-pg-ha-v2
-kubectl get opsdefinition polardb-pg-ha-v2-rejoin \
-  polardb-pg-ha-v2-rebuild
+kubectl get componentdefinition polardb-pg-ha
+kubectl get opsdefinition polardb-pg-ha-rejoin \
+  polardb-pg-ha-rebuild
 ```
 
 生产环境需固定 Spilo、PgBouncer 与 exporter 的 digest。可从 [values-production.example.yaml](../examples/polardb-postgresql-ha-kb08/values-production.example.yaml) 创建经审批的 values 文件：
@@ -35,7 +35,7 @@ helm upgrade --install kb-addon-polardb-postgresql deploy/addons/polardb-postgre
 ## 创建单副本并扩容为主备
 
 单副本与两副本使用相同的 `polardb-postgresql` addon、
-`polardb-postgresql-ha-kb08` ClusterDefinition 和 `polardb-pg-ha-v2`
+`polardb-postgresql-ha-kb08` ClusterDefinition 和 `polardb-pg-ha`
 ComponentDefinition。创建后不能替换 ComponentDefinition，但可以直接调整副本数。
 
 ```bash
@@ -45,7 +45,7 @@ kubectl wait --for=jsonpath='{.status.phase}'=Running cluster/pg-single \
   -n polardb-pg-ha-kb08 --timeout=20m
 
 # 单副本时 BackupPolicy 不选择 secondary，而是选择唯一可用实例。
-kubectl get backuppolicy pg-single-polardb-pg-ha-v2-backup-policy \
+kubectl get backuppolicy pg-single-polardb-pg-ha-backup-policy \
   -n polardb-pg-ha-kb08 -o yaml
 kubectl apply -f examples/polardb-postgresql-ha-kb08/backup-single.yaml
 
@@ -154,7 +154,7 @@ Ops Job 会拒绝 primary，并在结束前等待目标回到 `replica/running`�
 
 ```bash
 kbcli cluster list-backup-policy pg-ha -n polardb-pg-ha-kb08
-kubectl get backuppolicy pg-ha-polardb-pg-ha-v2-backup-policy \
+kubectl get backuppolicy pg-ha-polardb-pg-ha-backup-policy \
   -n polardb-pg-ha-kb08
 ```
 

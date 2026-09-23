@@ -14,4 +14,4 @@ name: polardb-postgresql
 sources:
 - https://github.com/wallyxjh/kubeblocks/
 type: application
-version: 0.8.3
+version: 0.8.4

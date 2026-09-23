@@ -22,7 +22,7 @@ func TestSyncRoleLabelSelectorFollowsDesiredComponentReplicas(t *testing.T) {
 			ComponentSpecs: []appsv1alpha1.ClusterComponentSpec{
 				{
 					Name:         "postgresql",
-					ComponentDef: "polardb-pg-ha-v2",
+					ComponentDef: "polardb-pg-ha",
 					Replicas:     1,
 				},
 			},
@@ -31,7 +31,7 @@ func TestSyncRoleLabelSelectorFollowsDesiredComponentReplicas(t *testing.T) {
 	transformer := &clusterBackupPolicyTransformer{
 		clusterTransformContext: &clusterTransformContext{Cluster: cluster},
 		backupPolicy: &appsv1alpha1.BackupPolicy{
-			ComponentDefs: []string{"polardb-pg-ha-v2"},
+			ComponentDefs: []string{"polardb-pg-ha"},
 		},
 	}
 	target := &dpv1alpha1.BackupTarget{
@@ -60,7 +60,7 @@ func TestBuildBackupPolicyAppliesSingleReplicaRoleFallback(t *testing.T) {
 			ComponentSpecs: []appsv1alpha1.ClusterComponentSpec{
 				{
 					Name:         "postgresql",
-					ComponentDef: "polardb-pg-ha-v2",
+					ComponentDef: "polardb-pg-ha",
 					Replicas:     1,
 				},
 			},
@@ -75,7 +75,7 @@ func TestBuildBackupPolicyAppliesSingleReplicaRoleFallback(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-backup-template"},
 		},
 		backupPolicy: &appsv1alpha1.BackupPolicy{
-			ComponentDefs: []string{"polardb-pg-ha-v2"},
+			ComponentDefs: []string{"polardb-pg-ha"},
 			Target: appsv1alpha1.TargetInstance{
 				Role: "secondary",
 			},
