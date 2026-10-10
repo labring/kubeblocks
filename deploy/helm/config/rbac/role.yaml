@@ -574,6 +574,23 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets/finalizers
+  verbs:
+  - update
+- apiGroups:
   - ""
   resources:
   - secrets
