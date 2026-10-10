@@ -263,12 +263,16 @@ func abortEarlierOpsRequestWithSameKind(reqCtx intctrlutil.RequestCtx,
 	}
 	// get the running opsRequest before this opsRequest to running.
 	var earlierRunningOpsSlice []appsv1alpha1.OpsRecorder
-	for i := range opsRequestSlice {
+	currentIndex, _ := GetOpsRecorderFromSlice(opsRequestSlice, opsRes.OpsRequest.Name)
+	if currentIndex < 0 {
+		if len(opsRequestSlice) > 0 {
+			return fmt.Errorf("opsRequest %q is missing from the cluster operations queue", opsRes.OpsRequest.Name)
+		}
+		return nil
+	}
+	for i := 0; i < currentIndex; i++ {
 		if !slices.Contains(sameKinds, opsRequestSlice[i].Type) {
 			continue
-		}
-		if opsRequestSlice[i].Name == opsRes.OpsRequest.Name {
-			break
 		}
 		earlierRunningOpsSlice = append(earlierRunningOpsSlice, opsRequestSlice[i])
 	}

@@ -38,10 +38,13 @@ var _ OpsHandler = StopOpsHandler{}
 
 func init() {
 	stopBehaviour := OpsBehaviour{
-		FromClusterPhases: append(appsv1alpha1.GetClusterUpRunningPhases(), appsv1alpha1.UpdatingClusterPhase),
-		ToClusterPhase:    appsv1alpha1.StoppingClusterPhase,
-		QueueByCluster:    true,
-		OpsHandler:        StopOpsHandler{},
+		FromClusterPhases: append(appsv1alpha1.GetClusterUpRunningPhases(),
+			appsv1alpha1.CreatingClusterPhase,
+			appsv1alpha1.UpdatingClusterPhase),
+		ToClusterPhase:      appsv1alpha1.StoppingClusterPhase,
+		QueueByCluster:      true,
+		ForceBypassOpsTypes: []appsv1alpha1.OpsType{appsv1alpha1.StartType},
+		OpsHandler:          StopOpsHandler{},
 	}
 
 	opsMgr := GetOpsManager()
@@ -67,11 +70,16 @@ func (stop StopOpsHandler) Action(reqCtx intctrlutil.RequestCtx, cli client.Clie
 	}
 
 	compOpsHelper := newComponentOpsHelper(stopList)
-	// abort earlier running opsRequests.
-
-	// abort earlier running vertical scaling opsRequest.
-	if err := abortEarlierOpsRequestWithSameKind(reqCtx, cli, opsRes, []appsv1alpha1.OpsType{appsv1alpha1.HorizontalScalingType,
-		appsv1alpha1.StartType, appsv1alpha1.RestartType, appsv1alpha1.VerticalScalingType},
+	abortableOpsTypes := []appsv1alpha1.OpsType{
+		appsv1alpha1.HorizontalScalingType,
+		appsv1alpha1.StartType,
+		appsv1alpha1.RestartType,
+		appsv1alpha1.VerticalScalingType,
+	}
+	if opsRes.OpsRequest.Force() {
+		abortableOpsTypes = []appsv1alpha1.OpsType{appsv1alpha1.StartType}
+	}
+	if err := abortEarlierOpsRequestWithSameKind(reqCtx, cli, opsRes, abortableOpsTypes,
 		func(earlierOps *appsv1alpha1.OpsRequest) (bool, error) {
 			if len(stopList) == 0 {
 				// stop all components
