@@ -958,6 +958,7 @@ rules:
   - delete
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - storage.kubeblocks.io
