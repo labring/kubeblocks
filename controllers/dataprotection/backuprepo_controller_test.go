@@ -487,6 +487,66 @@ parameters:
 			})).Should(Succeed())
 		})
 
+		It("should recreate the StorageClass object if the BackupRepo config got changed", func() {
+			var secretRef corev1.SecretReference
+			var storageClassName string
+			By("checking the BackupRepo, should be ready")
+			Eventually(testapps.CheckObj(&testCtx, repoKey, func(g Gomega, repo *dpv1alpha1.BackupRepo) {
+				g.Expect(repo.Status.Phase).Should(Equal(dpv1alpha1.BackupRepoReady))
+				g.Expect(repo.Status.GeneratedCSIDriverSecret).NotTo(BeNil())
+				g.Expect(repo.Status.GeneratedStorageClassName).NotTo(BeEmpty())
+				secretRef = *repo.Status.GeneratedCSIDriverSecret
+				storageClassName = repo.Status.GeneratedStorageClassName
+			})).Should(Succeed())
+
+			By("checking the StorageClass")
+			storageClassNameKey := types.NamespacedName{Name: storageClassName}
+			secretKey := types.NamespacedName{Name: secretRef.Name, Namespace: secretRef.Namespace}
+			var storageClassUID types.UID
+			var digest string
+			Eventually(testapps.CheckObj(&testCtx, storageClassNameKey, func(g Gomega, storageClass *storagev1.StorageClass) {
+				g.Expect(storageClass.Parameters).To(Equal(map[string]string{
+					"value-of-key1":             "val1",
+					"value-of-key2":             "val2",
+					"value-of-cred-key1":        "cred-val1",
+					"value-of-cred-key2":        "cred-val2",
+					"value-of-with-default":     "default value",
+					"value-of-with-default-int": "123",
+					"secret-name":               secretKey.Name,
+					"secret-namespace":          secretKey.Namespace,
+				}))
+				g.Expect(storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey]).NotTo(BeEmpty())
+				storageClassUID = storageClass.UID
+				digest = storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey]
+			})).Should(Succeed())
+
+			By("patching the BackupRepo config")
+			Eventually(func(g Gomega) {
+				repo := &dpv1alpha1.BackupRepo{}
+				g.Expect(testCtx.Cli.Get(testCtx.Ctx, repoKey, repo)).Should(Succeed())
+				patch := client.MergeFrom(repo.DeepCopy())
+				repo.Spec.Config["key1"] = "changed-val1"
+				repo.Spec.Config["with-default"] = "overwritten value"
+				g.Expect(testCtx.Cli.Patch(testCtx.Ctx, repo, patch)).Should(Succeed())
+			}).Should(Succeed())
+
+			By("checking the StorageClass again, should have new generation and new content")
+			Eventually(testapps.CheckObj(&testCtx, storageClassNameKey, func(g Gomega, storageClass *storagev1.StorageClass) {
+				g.Expect(storageClass.Parameters).To(Equal(map[string]string{
+					"value-of-key1":             "changed-val1",
+					"value-of-key2":             "val2",
+					"value-of-cred-key1":        "cred-val1",
+					"value-of-cred-key2":        "cred-val2",
+					"value-of-with-default":     "overwritten value",
+					"value-of-with-default-int": "123",
+					"secret-name":               secretKey.Name,
+					"secret-namespace":          secretKey.Namespace,
+				}))
+				g.Expect(storageClass.UID).ToNot(Equal(storageClassUID))
+				g.Expect(storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey]).NotTo(Equal(digest))
+			})).Should(Succeed())
+		})
+
 		It("should update the Secret object if the template or values got changed", func() {
 			By("checking the Secret")
 			var secretKey types.NamespacedName

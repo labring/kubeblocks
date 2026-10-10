@@ -133,8 +133,7 @@ type BackupRepoReconciler struct {
 	RestConfig      *rest.Config
 	MultiClusterMgr multicluster.Manager
 
-	secretRefMapper   refObjectMapper
-	providerRefMapper refObjectMapper
+	secretRefMapper refObjectMapper
 }
 
 // full access on BackupRepos
@@ -155,8 +154,8 @@ type BackupRepoReconciler struct {
 // watch or update Restores
 // +kubebuilder:rbac:groups=dataprotection.kubeblocks.io,resources=restores,verbs=get;list;watch;update;patch
 
-// create or delete StorageClasses
-// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;delete
+// create, patch or delete StorageClasses
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;delete;patch
 
 // create or delete PVCs
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -208,7 +207,6 @@ func (r *BackupRepoReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Namespace: repo.Spec.Credential.Namespace,
 		})
 	}
-	r.providerRefMapper.setRef(repo, types.NamespacedName{Name: repo.Spec.StorageProviderRef})
 
 	// check storage provider
 	provider, err := r.checkStorageProvider(reqCtx, repo)
@@ -577,36 +575,105 @@ func (r *BackupRepoReconciler) createOrUpdateSecretForCSIDriver(
 func (r *BackupRepoReconciler) createStorageClass(
 	reconCtx *reconcileContext) (created bool, err error) {
 
-	storageClass := &storagev1.StorageClass{}
-	storageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
+	desiredStorageClass := &storagev1.StorageClass{}
+	desiredStorageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
+	if err := r.renderStorageClass(reconCtx, desiredStorageClass); err != nil {
+		return false, err
+	}
+
 	// Note: the StorageClass should be universally created because the pre-check job runs
 	//       in the control cluster.
 	ctx := UniversalContext(reconCtx.Ctx, r.MultiClusterMgr)
-	return createObjectIfNotExist(ctx, r.Client, storageClass,
-		func() error {
-			// render storage class template
-			content, err := renderTemplate("sc", reconCtx.provider.Spec.StorageClassTemplate, reconCtx.renderCtx)
-			if err != nil {
-				return fmt.Errorf("failed to render storage class template: %w", err)
-			}
-			if err = yaml.Unmarshal([]byte(content), storageClass); err != nil {
-				return fmt.Errorf("failed to unmarshal storage class: %w", err)
-			}
+	storageClass := &storagev1.StorageClass{}
+	storageClass.Name = desiredStorageClass.Name
+	if err = r.Client.Get(ctx, client.ObjectKeyFromObject(storageClass), storageClass, multicluster.InUniversalContext()); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("failed to check existence of storage class %s: %w", storageClass.Name, err)
+		}
+		if err = r.Client.Create(ctx, desiredStorageClass, multicluster.InUniversalContext()); err != nil {
+			return false, fmt.Errorf("failed to create storage class %s: %w", desiredStorageClass.Name, err)
+		}
+		return true, nil
+	}
 
-			// create storage class object
-			storageClass.Labels = map[string]string{
-				dataProtectionBackupRepoKey: reconCtx.repo.Name,
-			}
-			bindingMode := storagev1.VolumeBindingImmediate
-			storageClass.VolumeBindingMode = &bindingMode
-			if reconCtx.repo.Spec.PVReclaimPolicy != "" {
-				storageClass.ReclaimPolicy = &reconCtx.repo.Spec.PVReclaimPolicy
-			}
-			if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
-				return fmt.Errorf("failed to set owner reference: %w", err)
-			}
-			return nil
-		}, multicluster.InUniversalContext())
+	if storageClassSpecEqual(storageClass, desiredStorageClass) {
+		return false, r.patchStorageClassMetadata(ctx, reconCtx, storageClass)
+	}
+
+	if err = r.Client.Delete(ctx, storageClass, multicluster.InUniversalContext()); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete outdated storage class %s: %w", storageClass.Name, err)
+	}
+	if err = r.Client.Create(ctx, desiredStorageClass, multicluster.InUniversalContext()); err != nil {
+		return false, fmt.Errorf("failed to recreate storage class %s: %w", desiredStorageClass.Name, err)
+	}
+	return true, nil
+}
+
+func (r *BackupRepoReconciler) renderStorageClass(reconCtx *reconcileContext, storageClass *storagev1.StorageClass) error {
+	// render storage class template
+	content, err := renderTemplate("sc", reconCtx.provider.Spec.StorageClassTemplate, reconCtx.renderCtx)
+	if err != nil {
+		return fmt.Errorf("failed to render storage class template: %w", err)
+	}
+	if err = yaml.Unmarshal([]byte(content), storageClass); err != nil {
+		return fmt.Errorf("failed to unmarshal storage class: %w", err)
+	}
+
+	// create storage class object
+	storageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
+	storageClass.Namespace = ""
+	storageClass.Labels = map[string]string{
+		dataProtectionBackupRepoKey: reconCtx.repo.Name,
+	}
+	if storageClass.Annotations == nil {
+		storageClass.Annotations = map[string]string{}
+	}
+	storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey] = reconCtx.getDigest()
+	bindingMode := storagev1.VolumeBindingImmediate
+	storageClass.VolumeBindingMode = &bindingMode
+	if reconCtx.repo.Spec.PVReclaimPolicy != "" {
+		storageClass.ReclaimPolicy = &reconCtx.repo.Spec.PVReclaimPolicy
+	}
+	if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+	return nil
+}
+
+func (r *BackupRepoReconciler) patchStorageClassMetadata(ctx context.Context, reconCtx *reconcileContext,
+	storageClass *storagev1.StorageClass) error {
+	oldStorageClass := storageClass.DeepCopy()
+	if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+	if storageClass.Labels == nil {
+		storageClass.Labels = map[string]string{}
+	}
+	storageClass.Labels[dataProtectionBackupRepoKey] = reconCtx.repo.Name
+	if storageClass.Annotations == nil {
+		storageClass.Annotations = map[string]string{}
+	}
+	storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey] = reconCtx.getDigest()
+	if reflect.DeepEqual(oldStorageClass.Labels, storageClass.Labels) &&
+		reflect.DeepEqual(oldStorageClass.Annotations, storageClass.Annotations) &&
+		reflect.DeepEqual(oldStorageClass.OwnerReferences, storageClass.OwnerReferences) {
+		return nil
+	}
+	patch := client.MergeFrom(oldStorageClass)
+	if err := r.Client.Patch(ctx, storageClass, patch, multicluster.InUniversalContext()); err != nil {
+		return fmt.Errorf("failed to patch storage class metadata %s: %w", storageClass.Name, err)
+	}
+	return nil
+}
+
+func storageClassSpecEqual(left, right *storagev1.StorageClass) bool {
+	return left.Provisioner == right.Provisioner &&
+		reflect.DeepEqual(left.Parameters, right.Parameters) &&
+		reflect.DeepEqual(left.ReclaimPolicy, right.ReclaimPolicy) &&
+		reflect.DeepEqual(left.MountOptions, right.MountOptions) &&
+		reflect.DeepEqual(left.AllowVolumeExpansion, right.AllowVolumeExpansion) &&
+		reflect.DeepEqual(left.VolumeBindingMode, right.VolumeBindingMode) &&
+		reflect.DeepEqual(left.AllowedTopologies, right.AllowedTopologies)
 }
 
 func (r *BackupRepoReconciler) checkPVCTemplate(reconCtx *reconcileContext) (err error) {
@@ -1394,7 +1461,6 @@ func (r *BackupRepoReconciler) deleteExternalResources(
 
 	// maintain mappers
 	r.secretRefMapper.removeRef(repo)
-	r.providerRefMapper.removeRef(repo)
 
 	return nil
 }
@@ -1549,7 +1615,30 @@ func (r *BackupRepoReconciler) mapRestoreToRepo(ctx context.Context, obj client.
 }
 
 func (r *BackupRepoReconciler) mapProviderToRepos(ctx context.Context, obj client.Object) []ctrl.Request {
-	return r.providerRefMapper.mapToRequests(obj)
+	repoList := &dpv1alpha1.BackupRepoList{}
+	if err := r.Client.List(ctx, repoList, multicluster.InControlContext()); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list BackupRepos for StorageProvider", "provider", obj.GetName())
+		return nil
+	}
+
+	providerName := obj.GetName()
+	requests := make([]ctrl.Request, 0, len(repoList.Items))
+	for i := range repoList.Items {
+		repo := &repoList.Items[i]
+		if repo.Spec.StorageProviderRef != providerName {
+			continue
+		}
+		requests = append(requests, ctrl.Request{
+			NamespacedName: client.ObjectKeyFromObject(repo),
+		})
+	}
+	sort.Slice(requests, func(i, j int) bool {
+		if requests[i].Namespace != requests[j].Namespace {
+			return requests[i].Namespace < requests[j].Namespace
+		}
+		return requests[i].Name < requests[j].Name
+	})
+	return requests
 }
 
 func (r *BackupRepoReconciler) mapSecretToRepos(ctx context.Context, obj client.Object) []ctrl.Request {
