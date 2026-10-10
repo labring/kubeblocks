@@ -143,8 +143,8 @@ type BackupRepoReconciler struct {
 // watch or update Backups
 // +kubebuilder:rbac:groups=dataprotection.kubeblocks.io,resources=backups,verbs=get;list;watch;update;patch
 
-// create or delete StorageClasses
-// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;delete
+// create, patch or delete StorageClasses
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;delete;patch
 
 // create or delete PVCs
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -501,33 +501,102 @@ func (r *BackupRepoReconciler) createOrUpdateSecretForCSIDriver(
 func (r *BackupRepoReconciler) createStorageClass(
 	reconCtx *reconcileContext) (created bool, err error) {
 
-	storageClass := &storagev1.StorageClass{}
-	storageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
-	return createObjectIfNotExist(reconCtx.Ctx, r.Client, storageClass,
-		func() error {
-			// render storage class template
-			content, err := renderTemplate("sc", reconCtx.provider.Spec.StorageClassTemplate, reconCtx.renderCtx)
-			if err != nil {
-				return fmt.Errorf("failed to render storage class template: %w", err)
-			}
-			if err = yaml.Unmarshal([]byte(content), storageClass); err != nil {
-				return fmt.Errorf("failed to unmarshal storage class: %w", err)
-			}
+	desiredStorageClass := &storagev1.StorageClass{}
+	desiredStorageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
+	if err := r.renderStorageClass(reconCtx, desiredStorageClass); err != nil {
+		return false, err
+	}
 
-			// create storage class object
-			storageClass.Labels = map[string]string{
-				dataProtectionBackupRepoKey: reconCtx.repo.Name,
-			}
-			bindingMode := storagev1.VolumeBindingImmediate
-			storageClass.VolumeBindingMode = &bindingMode
-			if reconCtx.repo.Spec.PVReclaimPolicy != "" {
-				storageClass.ReclaimPolicy = &reconCtx.repo.Spec.PVReclaimPolicy
-			}
-			if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
-				return fmt.Errorf("failed to set owner reference: %w", err)
-			}
-			return nil
-		})
+	storageClass := &storagev1.StorageClass{}
+	storageClass.Name = desiredStorageClass.Name
+	if err = r.Client.Get(reconCtx.Ctx, client.ObjectKeyFromObject(storageClass), storageClass); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("failed to check existence of storage class %s: %w", storageClass.Name, err)
+		}
+		if err = r.Client.Create(reconCtx.Ctx, desiredStorageClass); err != nil {
+			return false, fmt.Errorf("failed to create storage class %s: %w", desiredStorageClass.Name, err)
+		}
+		return true, nil
+	}
+
+	if storageClassSpecEqual(storageClass, desiredStorageClass) {
+		return false, r.patchStorageClassMetadata(reconCtx, storageClass)
+	}
+
+	if err = r.Client.Delete(reconCtx.Ctx, storageClass); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete outdated storage class %s: %w", storageClass.Name, err)
+	}
+	if err = r.Client.Create(reconCtx.Ctx, desiredStorageClass); err != nil {
+		return false, fmt.Errorf("failed to recreate storage class %s: %w", desiredStorageClass.Name, err)
+	}
+	return true, nil
+}
+
+func (r *BackupRepoReconciler) renderStorageClass(reconCtx *reconcileContext, storageClass *storagev1.StorageClass) error {
+	// render storage class template
+	content, err := renderTemplate("sc", reconCtx.provider.Spec.StorageClassTemplate, reconCtx.renderCtx)
+	if err != nil {
+		return fmt.Errorf("failed to render storage class template: %w", err)
+	}
+	if err = yaml.Unmarshal([]byte(content), storageClass); err != nil {
+		return fmt.Errorf("failed to unmarshal storage class: %w", err)
+	}
+
+	// create storage class object
+	storageClass.Name = reconCtx.repo.Status.GeneratedStorageClassName
+	storageClass.Namespace = ""
+	storageClass.Labels = map[string]string{
+		dataProtectionBackupRepoKey: reconCtx.repo.Name,
+	}
+	if storageClass.Annotations == nil {
+		storageClass.Annotations = map[string]string{}
+	}
+	storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey] = reconCtx.getDigest()
+	bindingMode := storagev1.VolumeBindingImmediate
+	storageClass.VolumeBindingMode = &bindingMode
+	if reconCtx.repo.Spec.PVReclaimPolicy != "" {
+		storageClass.ReclaimPolicy = &reconCtx.repo.Spec.PVReclaimPolicy
+	}
+	if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+	return nil
+}
+
+func (r *BackupRepoReconciler) patchStorageClassMetadata(reconCtx *reconcileContext,
+	storageClass *storagev1.StorageClass) error {
+	oldStorageClass := storageClass.DeepCopy()
+	if err := controllerutil.SetControllerReference(reconCtx.repo, storageClass, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+	if storageClass.Labels == nil {
+		storageClass.Labels = map[string]string{}
+	}
+	storageClass.Labels[dataProtectionBackupRepoKey] = reconCtx.repo.Name
+	if storageClass.Annotations == nil {
+		storageClass.Annotations = map[string]string{}
+	}
+	storageClass.Annotations[dataProtectionBackupRepoDigestAnnotationKey] = reconCtx.getDigest()
+	if reflect.DeepEqual(oldStorageClass.Labels, storageClass.Labels) &&
+		reflect.DeepEqual(oldStorageClass.Annotations, storageClass.Annotations) &&
+		reflect.DeepEqual(oldStorageClass.OwnerReferences, storageClass.OwnerReferences) {
+		return nil
+	}
+	patch := client.MergeFrom(oldStorageClass)
+	if err := r.Client.Patch(reconCtx.Ctx, storageClass, patch); err != nil {
+		return fmt.Errorf("failed to patch storage class metadata %s: %w", storageClass.Name, err)
+	}
+	return nil
+}
+
+func storageClassSpecEqual(left, right *storagev1.StorageClass) bool {
+	return left.Provisioner == right.Provisioner &&
+		reflect.DeepEqual(left.Parameters, right.Parameters) &&
+		reflect.DeepEqual(left.ReclaimPolicy, right.ReclaimPolicy) &&
+		reflect.DeepEqual(left.MountOptions, right.MountOptions) &&
+		reflect.DeepEqual(left.AllowVolumeExpansion, right.AllowVolumeExpansion) &&
+		reflect.DeepEqual(left.VolumeBindingMode, right.VolumeBindingMode) &&
+		reflect.DeepEqual(left.AllowedTopologies, right.AllowedTopologies)
 }
 
 func (r *BackupRepoReconciler) checkPVCTemplate(reconCtx *reconcileContext) (err error) {
