@@ -597,6 +597,25 @@ var _ = Describe("Backup Controller test", func() {
 
 				// TODO: add delete backup test case with the pvc not exists
 			})
+
+			It("should release the backup without a Job if file deletion is skipped by annotation", func() {
+				By("annotating the backup to skip deleting its files")
+				Expect(testapps.ChangeObj(&testCtx, backup, func(fetched *dpv1alpha1.Backup) {
+					if fetched.Annotations == nil {
+						fetched.Annotations = map[string]string{}
+					}
+					fetched.Annotations[dptypes.SkipDeleteBackupFilesAnnotationKey] = "true"
+				})).Should(Succeed())
+
+				By("deleting a backup object")
+				testapps.DeleteObject(&testCtx, backupKey, &dpv1alpha1.Backup{})
+
+				By("checking backup object, it should be deleted without a deletion job")
+				Eventually(testapps.CheckObjExists(&testCtx, backupKey,
+					&dpv1alpha1.Backup{}, false)).Should(Succeed())
+				Consistently(testapps.CheckObjExists(&testCtx,
+					dpbackup.BuildDeleteBackupFilesJobKey(backup, false), &batchv1.Job{}, false)).Should(Succeed())
+			})
 		})
 
 		Context("creates a snapshot backup", func() {

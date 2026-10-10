@@ -64,6 +64,9 @@ const (
 	GeminiAcknowledgedAnnotationKey = "dataprotection.kubeblocks.io/gemini-acknowledged"
 	// LastAppliedConfigsAnnotationKey specifies last applied reconfigurations.
 	LastAppliedConfigsAnnotationKey = "dataprotection.kubeblocks.io/last-applied-configurations"
+	// SkipDeleteBackupFilesAnnotationKey gives up cleaning the backup files, so that a
+	// backup whose repository is no longer reachable can still be deleted.
+	SkipDeleteBackupFilesAnnotationKey = "dataprotection.kubeblocks.io/skip-delete-backup-files"
 )
 
 // label keys
