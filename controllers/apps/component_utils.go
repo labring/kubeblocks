@@ -111,7 +111,10 @@ func UpdateInstanceSetSystemFields(obj v1alpha1.InstanceSetSpec, pobj *v1alpha1.
 // UpdatePodSpecSystemFields to update system fields in pod spec.
 func UpdatePodSpecSystemFields(obj corev1.PodSpec, pobj *corev1.PodSpec) {
 	for i := range pobj.Containers {
-		updateKubeBlocksToolsImage(&pobj.Containers[i])
+		updateKubeBlocksToolsImage(getContainerByName(obj.Containers, pobj.Containers[i].Name), &pobj.Containers[i])
+	}
+	for i := range pobj.InitContainers {
+		updateKubeBlocksToolsImage(getContainerByName(obj.InitContainers, pobj.InitContainers[i].Name), &pobj.InitContainers[i])
 	}
 
 	updateLorryContainer(obj.Containers, pobj.Containers)
@@ -132,12 +135,19 @@ func updateLorryContainer(containers []corev1.Container, pcontainers []corev1.Co
 }
 
 func delayUpdateKubeBlocksToolsImage(containers []corev1.Container, pc *corev1.Container) {
-	if pc.Image != viper.GetString(constant.KBToolsImage) {
+	toolsImage := viper.GetString(constant.KBToolsImage)
+	// only manage the container if the rendered image is the current tools image or
+	// belongs to the KubeBlocks tools image family, e.g. the image has been rolled
+	// back to the old tools image from another repository.
+	if pc.Image != toolsImage && !isKubeBlocksToolsImage(pc.Image) {
 		return
 	}
 	for _, c := range containers {
 		if c.Name == pc.Name {
-			if getImageName(c.Image) == getImageName(pc.Image) {
+			// hold back the update if the running image belongs to the tools image
+			// family, including images from a different repository, until the
+			// workload spec is updated for other reasons.
+			if isKubeBlocksToolsImage(c.Image) {
 				pc.Image = c.Image
 			}
 			break
@@ -145,21 +155,47 @@ func delayUpdateKubeBlocksToolsImage(containers []corev1.Container, pc *corev1.C
 	}
 }
 
-func updateKubeBlocksToolsImage(pc *corev1.Container) {
-	if getImageName(pc.Image) == getImageName(viper.GetString(constant.KBToolsImage)) {
-		pc.Image = viper.GetString(constant.KBToolsImage)
+func updateKubeBlocksToolsImage(proto, pc *corev1.Container) {
+	toolsImage := viper.GetString(constant.KBToolsImage)
+	// the container is rendered from the current tools image
+	if proto != nil && proto.Image == toolsImage {
+		pc.Image = toolsImage
+		return
+	}
+	// the workload is running a tools image of the family (possibly from another
+	// repository), advance it to the current tools image
+	if isKubeBlocksToolsImage(pc.Image) {
+		pc.Image = toolsImage
 	}
 }
 
-func getImageName(image string) string {
-	subs := strings.Split(image, ":")
-	switch len(subs) {
-	case 2:
-		return subs[0]
-	case 3:
-		lastIndex := strings.LastIndex(image, ":")
-		return image[:lastIndex]
-	default:
-		return ""
+// isKubeBlocksToolsImage reports whether the image belongs to the KubeBlocks
+// tools image family, i.e. the base name of the image equals kubeblocks-tools,
+// such as ghcr.io/labring/kubeblocks-tools:v0.9.3.7.
+func isKubeBlocksToolsImage(image string) bool {
+	if image == "" {
+		return false
 	}
+	// strip the digest if present, e.g. ghcr.io/labring/kubeblocks-tools@sha256:...
+	if idx := strings.Index(image, "@"); idx >= 0 {
+		image = image[:idx]
+	}
+	// strip the tag if present, keep a registry host with port, e.g. registry:5000/apecloud/...
+	if idx := strings.LastIndex(image, ":"); idx > strings.LastIndex(image, "/") {
+		image = image[:idx]
+	}
+	base := image
+	if idx := strings.LastIndex(image, "/"); idx >= 0 {
+		base = image[idx+1:]
+	}
+	return base == constant.KBToolsImageBaseName
+}
+
+func getContainerByName(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+	return nil
 }
