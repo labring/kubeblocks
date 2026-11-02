@@ -83,6 +83,32 @@ func (t *MemberReconfigurationTransformer) Transform(ctx graph.TransformContext,
 	}
 
 	if !shouldHaveActions(rsm) {
+		// An action can change the engine membership before the Job has finished
+		// verifying it. In particular, a follower disappears from the role view
+		// as soon as it is downgraded to Learner, but its leave action still needs
+		// to drop and confirm that learner before the StatefulSet may delete it.
+		actionList, err := getActionList(transCtx, jobScenarioMembership)
+		if err != nil {
+			return err
+		}
+		if len(actionList) == 0 {
+			return nil
+		}
+		sts := &apps.StatefulSet{}
+		if err := graphCli.Get(transCtx.Context, client.ObjectKeyFromObject(rsm), sts); err != nil {
+			return err
+		}
+		graphCli.Noop(dag, sts)
+		action := actionList[0]
+		switch {
+		case action.Status.Succeeded > 0:
+			if isActionDone(rsm, action) {
+				deleteAction(transCtx, dag, action)
+				return createNextAction(transCtx, dag, rsm, action)
+			}
+		case action.Status.Failed > 0:
+			emitEvent(transCtx, action)
+		}
 		return nil
 	}
 
@@ -92,18 +118,29 @@ func (t *MemberReconfigurationTransformer) Transform(ctx graph.TransformContext,
 		return err
 	}
 
-	// no enough replicas in scale out, tell sts to create them.
+	// During scale-out, the next Pod is deliberately started as a learner and
+	// therefore is not Ready until the member-join action has completed. Wait for
+	// the Pod to exist, but do not wait for the StatefulSet to become fully Ready.
 	memberReadyReplicas := int32(len(rsm.Status.MembersStatus))
-	if memberReadyReplicas < *rsm.Spec.Replicas &&
-		sts.Status.ReadyReplicas < *rsm.Spec.Replicas {
-		return nil
+	if memberReadyReplicas < *rsm.Spec.Replicas {
+		// StatefulSet status.Replicas counts created Pods, including Pods that
+		// are not Ready yet. The next ordinal is the first missing member.
+		if sts.Status.ObservedGeneration != sts.Generation ||
+			sts.Status.Replicas < memberReadyReplicas+1 {
+			return nil
+		}
+	} else {
+		graphCli.Noop(dag, sts)
+
+		// Scale-in and any non-scale-out membership action still require the
+		// underlying StatefulSet to be fully Ready.
+		if sts.Status.ReadyReplicas < *rsm.Spec.Replicas || !isStatefulSetReady(sts) {
+			return nil
+		}
 	}
 
-	graphCli.Noop(dag, sts)
-
-	// barrier: the underlying sts is ready and has enough replicas
-	if sts.Status.ReadyReplicas < *rsm.Spec.Replicas || !isStatefulSetReady(sts) {
-		return nil
+	if memberReadyReplicas < *rsm.Spec.Replicas {
+		graphCli.Noop(dag, sts)
 	}
 
 	// get last action
@@ -183,7 +220,7 @@ func isActionDone(rsm *workloads.ReplicatedStateMachine, action *batchv1.Job) bo
 	case jobTypeMemberLeaveNotifying:
 		return !isMemberReady(podName, membersStatus)
 	case jobTypeMemberJoinNotifying:
-		return isMemberReady(podName, membersStatus)
+		return isMemberVoting(podName, membersStatus)
 	case jobTypeLogSync, jobTypePromote:
 		// no info, ignore them
 	}

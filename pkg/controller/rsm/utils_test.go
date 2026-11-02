@@ -253,6 +253,32 @@ var _ = Describe("utils test", func() {
 			}
 			Expect(findSvcPort(*rsm)).Should(BeZero())
 		})
+
+		It("uses the first TCP container port when the legacy RSM has no service spec", func() {
+			rsm.Spec.Service = nil
+			rsm.Spec.Template.Spec.Containers = []corev1.Container{{
+				Name: "engine",
+				Ports: []corev1.ContainerPort{
+					{ContainerPort: 1234, Protocol: corev1.ProtocolUDP},
+					{ContainerPort: 3306, Name: "mysql", Protocol: corev1.ProtocolTCP},
+				},
+			}}
+
+			Expect(findSvcPort(*rsm)).Should(BeEquivalentTo(3306))
+
+			env := buildActionEnv(rsm, "db-0", "db-1")
+			Expect(env).Should(ContainElement(corev1.EnvVar{
+				Name:  servicePortVarName,
+				Value: "3306",
+			}))
+		})
+
+		It("keeps the service port unset when neither service nor container ports exist", func() {
+			rsm.Spec.Service = nil
+			rsm.Spec.Template.Spec.Containers = []corev1.Container{{Name: "engine"}}
+
+			Expect(findSvcPort(*rsm)).Should(BeZero())
+		})
 	})
 
 	Context("getPodName function", func() {
@@ -289,6 +315,72 @@ var _ = Describe("utils test", func() {
 			By("set no leader")
 			membersStatus[0].IsLeader = false
 			Expect(getLeaderPodName(membersStatus)).Should(BeZero())
+		})
+	})
+
+	Context("IsRSMReady function", func() {
+		buildReadyRSM := func(membersStatus ...workloads.MemberStatus) *workloads.ReplicatedStateMachine {
+			replicas := int32(3)
+			readyRSM := builder.NewReplicatedStateMachineBuilder(namespace, name).
+				SetReplicas(replicas).
+				SetRoles(roles).
+				SetRoleProbe(roleProbe).
+				GetObject()
+			readyRSM.Status.InitReplicas = replicas
+			readyRSM.Status.ReadyInitReplicas = replicas
+			readyRSM.Status.Replicas = replicas
+			readyRSM.Status.ReadyReplicas = replicas
+			readyRSM.Status.UpdatedReplicas = replicas
+			readyRSM.Status.MembersStatus = membersStatus
+			return readyRSM
+		}
+
+		It("should require exactly one leader", func() {
+			membersStatus := []workloads.MemberStatus{
+				{PodName: "bar-0", ReplicaRole: workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}},
+				{PodName: "bar-1", ReplicaRole: workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}},
+				{PodName: "bar-2", ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true}},
+			}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeFalse())
+
+			membersStatus[1].ReplicaRole = workloads.ReplicaRole{Name: "follower", CanVote: true}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeTrue())
+
+			membersStatus[2].ReplicaRole = workloads.ReplicaRole{Name: "learner", CanVote: false}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeTrue())
+
+			membersStatus[0].ReplicaRole = workloads.ReplicaRole{Name: "follower", CanVote: true}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeFalse())
+		})
+
+		It("should preserve ready-without-primary behavior", func() {
+			membersStatus := []workloads.MemberStatus{
+				{PodName: "bar-0", ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true}, ReadyWithoutPrimary: true},
+				{PodName: "bar-1", ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true}},
+				{PodName: "bar-2", ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true}},
+			}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeTrue())
+
+			By("not allowing ready-without-primary to mask multiple leaders")
+			membersStatus[0].ReplicaRole = workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}
+			membersStatus[1].ReplicaRole = workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}
+			Expect(IsRSMReady(buildReadyRSM(membersStatus...))).Should(BeFalse())
+		})
+
+		It("should preserve explicitly configured multiple leader roles", func() {
+			membersStatus := []workloads.MemberStatus{
+				{PodName: "bar-0", ReplicaRole: workloads.ReplicaRole{Name: "leader-a", IsLeader: true, CanVote: true}},
+				{PodName: "bar-1", ReplicaRole: workloads.ReplicaRole{Name: "leader-b", IsLeader: true, CanVote: true}},
+				{PodName: "bar-2", ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true}},
+			}
+			readyRSM := buildReadyRSM(membersStatus...)
+			readyRSM.Spec.Roles = []workloads.ReplicaRole{
+				{Name: "leader-a", IsLeader: true, CanVote: true},
+				{Name: "leader-b", IsLeader: true, CanVote: true},
+				{Name: "follower", CanVote: true},
+			}
+
+			Expect(IsRSMReady(readyRSM)).Should(BeTrue())
 		})
 	})
 

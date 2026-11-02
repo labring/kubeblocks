@@ -248,7 +248,13 @@ func (c *rsmCredentialConvertor) convert(args ...any) (any, error) {
 		}
 	}
 	if sysInitAccount == nil && len(synthesizeComp.CompDefName) != 0 {
-		return nil, nil
+		// New ComponentDefinition-based components use an explicit init account
+		// for RSM actions. Legacy ClusterDefinition components can fall back to
+		// the cluster connection credential, but only when there is an action
+		// that needs those credentials.
+		if len(synthesizeComp.ClusterCompDefName) == 0 || !hasRsmMembershipAction(synthesizeComp) {
+			return nil, nil
+		}
 	}
 
 	var secretName string
@@ -282,9 +288,27 @@ func (c *rsmCredentialConvertor) convert(args ...any) (any, error) {
 	return credential, nil
 }
 
+func hasRsmMembershipAction(synthesizeComp *SynthesizedComponent) bool {
+	if synthesizeComp.RSMSpec == nil || synthesizeComp.RSMSpec.MembershipReconfiguration == nil {
+		return false
+	}
+	reconfiguration := synthesizeComp.RSMSpec.MembershipReconfiguration
+	return reconfiguration.SwitchoverAction != nil ||
+		reconfiguration.MemberJoinAction != nil ||
+		reconfiguration.MemberLeaveAction != nil ||
+		reconfiguration.LogSyncAction != nil ||
+		reconfiguration.PromoteAction != nil
+}
+
 func (c *rsmMembershipReconfigurationConvertor) convert(args ...any) (any, error) {
-	// synthesizeComp, err := parseRSMConvertorArgs(args...)
-	return "", nil // TODO
+	synthesizeComp, err := parseRSMConvertorArgs(args...)
+	if err != nil {
+		return nil, err
+	}
+	if synthesizeComp.RSMSpec == nil || synthesizeComp.RSMSpec.MembershipReconfiguration == nil {
+		return nil, nil
+	}
+	return synthesizeComp.RSMSpec.MembershipReconfiguration.DeepCopy(), nil
 }
 
 // ConvertSynthesizeCompRoleToRSMRole converts the component.SynthesizedComponent.Roles to workloads.ReplicaRole.

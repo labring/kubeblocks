@@ -773,6 +773,29 @@ func buildEnvConfigData(set workloads.ReplicatedStateMachine) map[string]string 
 
 	prefix := constant.KBPrefix + "_RSM_"
 	envData[prefix+"N"] = strReplicas
+	envData[prefix+"INIT_REPLICAS"] = strconv.Itoa(int(set.Status.InitReplicas))
+	currentMembers := int(*set.Spec.Replicas)
+	bootstrapComplete := false
+	if usesLearnerMembershipJoin(set) {
+		if set.Status.InitReplicas <= 0 || set.Status.ReadyInitReplicas < set.Status.InitReplicas {
+			// OrderedReady bootstrap creates one Pod at a time. Do not mistake
+			// the first ready Pod for the complete initial voting membership.
+			currentMembers = int(*set.Spec.Replicas)
+			if set.Status.InitReplicas > 0 {
+				currentMembers = int(set.Status.InitReplicas)
+			}
+		} else {
+			bootstrapComplete = true
+			currentMembers = countVotingMembers(set.Status.MembersStatus)
+			if currentMembers == 0 {
+				if stableCount, err := strconv.Atoi(set.Annotations[StableMembersAnnotation]); err == nil && stableCount >= 0 {
+					currentMembers = stableCount
+				}
+			}
+		}
+	}
+	envData[prefix+"CURRENT_MEMBER_COUNT"] = strconv.Itoa(currentMembers)
+	envData[prefix+"BOOTSTRAP_COMPLETE"] = strconv.FormatBool(bootstrapComplete)
 	generateReplicaEnv(prefix)
 	generateMemberEnv(prefix)
 	// set owner uid to let pod know if the owner is recreated
@@ -801,4 +824,19 @@ func buildEnvConfigData(set workloads.ReplicatedStateMachine) map[string]string 
 	}
 
 	return envData
+}
+
+func usesLearnerMembershipJoin(set workloads.ReplicatedStateMachine) bool {
+	reconfiguration := set.Spec.MembershipReconfiguration
+	return reconfiguration != nil && reconfiguration.MemberJoinAction != nil
+}
+
+func countVotingMembers(members []workloads.MemberStatus) int {
+	count := 0
+	for _, member := range members {
+		if member.CanVote {
+			count++
+		}
+	}
+	return count
 }

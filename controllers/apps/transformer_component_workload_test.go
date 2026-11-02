@@ -303,3 +303,135 @@ func TestComponentWorkloadHorizontalScalePVCDeletion(t *testing.T) {
 		})
 	}
 }
+
+func TestMembershipManagedScaleInBlocksReverseScaleOutUntilPVCsAreClean(t *testing.T) {
+	const (
+		clusterName = "cluster"
+		rsmName     = "cluster-dn"
+		volumeName  = "data"
+	)
+
+	one, three := int32(1), int32(3)
+	labels := constant.GetComponentWellKnownLabels(clusterName, "dn")
+	memberStatus := []v1alpha1.MemberStatus{{
+		PodName:     rsmName + "-0",
+		ReplicaRole: v1alpha1.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true},
+	}}
+	runningRSM := &v1alpha1.ReplicatedStateMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   namespace,
+			Name:        rsmName,
+			Generation:  4,
+			Annotations: map[string]string{scaleInPVCsAnnotation: formatScaleInPVCRange(one, three)},
+		},
+		Spec: v1alpha1.ReplicatedStateMachineSpec{
+			Replicas:             &one,
+			RsmTransformPolicy:   v1alpha1.ToSts,
+			Roles:                []v1alpha1.ReplicaRole{{Name: "leader", IsLeader: true, CanVote: true}, {Name: "follower", CanVote: true}},
+			RoleProbe:            &v1alpha1.RoleProbe{RoleUpdateMechanism: v1alpha1.DirectAPIServerEventUpdate},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Name: volumeName}}},
+		},
+		Status: v1alpha1.ReplicatedStateMachineStatus{
+			StatefulSetStatus: appsv1.StatefulSetStatus{
+				ObservedGeneration: 4,
+				Replicas:           1,
+				ReadyReplicas:      1,
+				UpdatedReplicas:    1,
+			},
+			InitReplicas:      1,
+			ReadyInitReplicas: 1,
+			CurrentGeneration: 4,
+			MembersStatus:     memberStatus,
+		},
+	}
+	protoRSM := runningRSM.DeepCopy()
+	protoRSM.Spec.Replicas = &three
+	protoRSM.Spec.MembershipReconfiguration = &v1alpha1.MembershipReconfiguration{
+		MemberLeaveAction: &v1alpha1.Action{Command: []string{"leave"}},
+	}
+	component := &component.SynthesizedComponent{
+		Namespace:   namespace,
+		ClusterName: clusterName,
+		Name:        "dn",
+		Replicas:    three,
+	}
+	cluster := &appsv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: clusterName}}
+	pvcs := []*corev1.PersistentVolumeClaim{
+		builder.NewPVCBuilder(namespace, volumeName+"-"+rsmName+"-0").AddLabelsInMap(labels).GetObject(),
+		builder.NewPVCBuilder(namespace, volumeName+"-"+rsmName+"-1").AddLabelsInMap(labels).GetObject(),
+		builder.NewPVCBuilder(namespace, volumeName+"-"+rsmName+"-2").AddLabelsInMap(labels).GetObject(),
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(pvcs[0], pvcs[1], pvcs[2]).Build()
+	reqCtx := intctrlutil.RequestCtx{Ctx: context.Background(), Log: logr.Discard(), Recorder: record.NewFakeRecorder(1)}
+	newOps := func(dag *graph.DAG, proto *v1alpha1.ReplicatedStateMachine) *componentWorkloadOps {
+		graphCli := model.NewGraphClient(cli)
+		graphCli.Root(dag, cluster.DeepCopy(), cluster, model.ActionStatusPtr())
+		return newComponentWorkloadOps(reqCtx, cli, cluster, component, runningRSM, proto, dag)
+	}
+
+	dag := graph.NewDAG()
+	ops := newOps(dag, protoRSM)
+	if err := ops.horizontalScale(); err != nil {
+		t.Fatalf("horizontalScale while PVC cleanup is pending: %v", err)
+	}
+	graphCli := model.NewGraphClient(cli)
+	if graphCli.IsAction(dag, pvcs[0], model.ActionDeletePtr()) {
+		t.Fatal("scale-in cleanup must retain the PVC for ordinal 0")
+	}
+	for _, pvc := range pvcs[1:] {
+		if !graphCli.IsAction(dag, pvc, model.ActionDeletePtr()) {
+			t.Fatalf("reverse scale-out must wait for cleanup of %s", pvc.Name)
+		}
+	}
+	if !graphCli.IsAction(dag, protoRSM, model.ActionNoopPtr()) {
+		t.Fatal("RSM replica increase must be blocked while removed-member PVCs are pending cleanup")
+	}
+
+	// Simulate the API server completing the scheduled deletions. The next
+	// reconcile records completion but still does not scale out in that pass.
+	for _, pvc := range pvcs[1:] {
+		if err := cli.Delete(context.Background(), pvc); err != nil {
+			t.Fatalf("delete simulated PVC %s: %v", pvc.Name, err)
+		}
+	}
+	protoRSM = runningRSM.DeepCopy()
+	protoRSM.Spec.Replicas = &three
+	protoRSM.Spec.MembershipReconfiguration = &v1alpha1.MembershipReconfiguration{
+		MemberLeaveAction: &v1alpha1.Action{Command: []string{"leave"}},
+	}
+	dag = graph.NewDAG()
+	ops = newOps(dag, protoRSM)
+	if err := ops.horizontalScale(); err != nil {
+		t.Fatalf("horizontalScale after PVC deletion: %v", err)
+	}
+	if got := protoRSM.Annotations[scaleInPVCsAnnotation]; got != scaleInPVCsComplete {
+		t.Fatalf("expected cleanup completion marker, got %q", got)
+	}
+	if got := protoRSM.Annotations[stableMembersAnnotation]; got != "1" {
+		t.Fatalf("expected stable voter count 1 before reverse scale-out, got %q", got)
+	}
+
+	// Once the cleanup marker is persisted, the next reconcile may finally
+	// raise the RSM replica count and let the missing ordinal be recreated.
+	runningRSM.Annotations[scaleInPVCsAnnotation] = scaleInPVCsComplete
+	protoRSM = runningRSM.DeepCopy()
+	protoRSM.Spec.Replicas = &three
+	protoRSM.Spec.MembershipReconfiguration = &v1alpha1.MembershipReconfiguration{
+		MemberLeaveAction: &v1alpha1.Action{Command: []string{"leave"}},
+	}
+	component.Replicas = three
+	dag = graph.NewDAG()
+	ops = newOps(dag, protoRSM)
+	if err := ops.horizontalScale(); err != nil {
+		t.Fatalf("horizontalScale after cleanup marker was persisted: %v", err)
+	}
+	if !graphCli.IsAction(dag, protoRSM, model.ActionUpdatePtr()) {
+		t.Fatal("reverse scale-out should proceed after the old ordinal PVCs are confirmed absent")
+	}
+}
+
+func TestParseScaleInPVCRangeRejectsScaleToZero(t *testing.T) {
+	if _, _, _, err := parseScaleInPVCRange("0:3"); err == nil {
+		t.Fatal("scale-to-zero cleanup marker must be rejected for membership-managed components")
+	}
+}

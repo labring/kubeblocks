@@ -28,6 +28,7 @@ import (
 	"github.com/golang/mock/gomock"
 	apps "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
@@ -43,7 +44,7 @@ var _ = Describe("member reconfiguration transformer test.", func() {
 		for i := 0; i < replicas; i++ {
 			status := workloads.MemberStatus{
 				PodName:     getPodName(rsm.Name, i),
-				ReplicaRole: workloads.ReplicaRole{Name: "follower"},
+				ReplicaRole: workloads.ReplicaRole{Name: "follower", CanVote: true},
 			}
 			membersStatus = append(membersStatus, status)
 		}
@@ -51,7 +52,7 @@ var _ = Describe("member reconfiguration transformer test.", func() {
 		if replicas > 1 {
 			leaderIndex = 1
 		}
-		membersStatus[leaderIndex].ReplicaRole = workloads.ReplicaRole{Name: "leader", IsLeader: true}
+		membersStatus[leaderIndex].ReplicaRole = workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}
 		return membersStatus
 	}
 	setRSMStatus := func(replicas int) {
@@ -162,6 +163,76 @@ var _ = Describe("member reconfiguration transformer test.", func() {
 	})
 
 	Context("scale-out", func() {
+		It("should wait for a joined learner to become a voter", func() {
+			membersStatus := []workloads.MemberStatus{
+				{PodName: getPodName(rsm.Name, 0), ReplicaRole: workloads.ReplicaRole{Name: "leader", IsLeader: true, CanVote: true}},
+				{PodName: getPodName(rsm.Name, 1), ReplicaRole: workloads.ReplicaRole{Name: "learner", CanVote: false}},
+			}
+			joinAction := mockAction(1, jobTypeMemberJoinNotifying, false)
+			rsmWithMembers := rsm.DeepCopy()
+			rsmWithMembers.Status.MembersStatus = membersStatus
+
+			Expect(isActionDone(rsmWithMembers, joinAction)).Should(BeFalse())
+
+			membersStatus[1].ReplicaRole = workloads.ReplicaRole{Name: "follower", CanVote: true}
+			Expect(membersStatus[1].CanVote).Should(BeTrue())
+			Expect(joinAction.Labels[jobTypeLabel]).Should(Equal(jobTypeMemberJoinNotifying))
+			ordinal, err := getActionOrdinal(joinAction.Name)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(ordinal).Should(Equal(1))
+			Expect(membersStatus[1].PodName).Should(Equal(getPodName(rsmWithMembers.Name, ordinal)))
+			rsmWithMembers.Status.MembersStatus = membersStatus
+			Expect(isActionDone(rsmWithMembers, joinAction)).Should(BeTrue())
+		})
+
+		It("should start the next member join after its learner pod exists but before it is ready", func() {
+			leader := workloads.MemberStatus{
+				PodName:     getPodName(rsm.Name, 0),
+				ReplicaRole: workloads.ReplicaRole{Name: "leader", IsLeader: true},
+			}
+			rsm.Generation = 3
+			rsm.Status.InitReplicas = 1
+			rsm.Status.ReadyInitReplicas = 1
+			rsm.Status.ObservedGeneration = rsm.Generation
+			rsm.Status.CurrentGeneration = rsm.Generation
+			rsm.Status.Replicas = 3
+			rsm.Status.ReadyReplicas = 1
+			rsm.Status.UpdatedReplicas = 1
+			rsm.Status.MembersStatus = []workloads.MemberStatus{leader}
+			transCtx.rsmOrig = rsm.DeepCopy()
+
+			sts := mockUnderlyingSts(*rsm, rsm.Generation)
+			sts.Status.Replicas = 2
+			sts.Status.ReadyReplicas = 1
+			sts.Status.AvailableReplicas = 1
+			k8sMock.EXPECT().
+				Get(gomock.Any(), gomock.Any(), &apps.StatefulSet{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ client.ObjectKey, obj *apps.StatefulSet, _ ...client.GetOption) error {
+					*obj = *sts
+					return nil
+				}).Times(1)
+			k8sMock.EXPECT().
+				List(gomock.Any(), &batchv1.JobList{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, list *batchv1.JobList, _ ...client.ListOption) error {
+					return nil
+				}).Times(1)
+
+			dag = mockDAG(sts, sts)
+			Expect(transformer.Transform(transCtx, dag)).Should(Succeed())
+			expectStsNoopAction(dag, true)
+
+			jobs := graphCli.FindAll(dag, &batchv1.Job{})
+			Expect(jobs).Should(HaveLen(1))
+			job := jobs[0].(*batchv1.Job)
+			Expect(job.Labels[jobTypeLabel]).Should(Equal(jobTypeMemberJoinNotifying))
+			Expect(job.Name).Should(Equal(getActionName(rsm.Name, int(rsm.Generation), 1, jobTypeMemberJoinNotifying)))
+			Expect(job.Spec.Template.Spec.Containers[0].Command).Should(Equal(reconfiguration.MemberJoinAction.Command))
+			Expect(job.Spec.Template.Spec.Containers[0].Env).Should(ContainElement(corev1.EnvVar{
+				Name:  targetHostVarName,
+				Value: getPodName(rsm.Name, 1) + "." + getHeadlessSvcName(*rsm),
+			}))
+		})
+
 		It("should work well", func() {
 			By("make rsm ready for scale-out")
 			setRSMStatus(int(*rsm.Spec.Replicas))
@@ -193,6 +264,10 @@ var _ = Describe("member reconfiguration transformer test.", func() {
 
 			By("prepare member 3 joining")
 			sts = mockUnderlyingSts(*rsm, rsm.Generation)
+			// The new ordinal exists, but the addon keeps it as a learner until
+			// member-join succeeds, so it is intentionally not Ready yet.
+			sts.Status.ReadyReplicas = 3
+			sts.Status.AvailableReplicas = 3
 			k8sMock.EXPECT().
 				Get(gomock.Any(), gomock.Any(), &apps.StatefulSet{}, gomock.Any()).
 				DoAndReturn(func(_ context.Context, objKey client.ObjectKey, obj *apps.StatefulSet, _ ...client.GetOption) error {
@@ -346,24 +421,54 @@ var _ = Describe("member reconfiguration transformer test.", func() {
 			By("make member 1 leaving successfully")
 			setRSMMembersStatus(1)
 			dag = mockDAG(stsOld, sts)
+			k8sMock.EXPECT().
+				Get(gomock.Any(), gomock.Any(), &apps.StatefulSet{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, objKey client.ObjectKey, obj *apps.StatefulSet, _ ...client.GetOption) error {
+					*obj = *stsOld
+					return nil
+				}).Times(1)
+			k8sMock.EXPECT().
+				List(gomock.Any(), &batchv1.JobList{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, list *batchv1.JobList, _ ...client.ListOption) error {
+					list.Items = []batchv1.Job{*action}
+					return nil
+				}).Times(1)
 			Expect(transformer.Transform(transCtx, dag)).Should(Succeed())
-			expectStsNoopAction(dag, false)
+			expectStsNoopAction(dag, true)
 			dagExpected = mockDAG(stsOld, sts)
+			graphCli.Noop(dagExpected, sts)
 			Expect(dag.Equals(dagExpected, less)).Should(BeTrue())
 
-			By("update rsm status")
+			By("keep the StatefulSet blocked until native leave Job completes")
+			action = mockAction(1, jobTypeMemberLeaveNotifying, true)
+			dag = mockDAG(stsOld, sts)
+			k8sMock.EXPECT().
+				Get(gomock.Any(), gomock.Any(), &apps.StatefulSet{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, objKey client.ObjectKey, obj *apps.StatefulSet, _ ...client.GetOption) error {
+					*obj = *stsOld
+					return nil
+				}).Times(1)
+			Expect(transformer.Transform(transCtx, dag)).Should(Succeed())
+			expectStsNoopAction(dag, true)
+			dagExpected = mockDAG(stsOld, sts)
+			graphCli.Noop(dagExpected, sts)
+			graphCli.Update(dagExpected, action, action)
+			Expect(dag.Equals(dagExpected, less)).Should(BeTrue())
+
+			By("allow StatefulSet scale-in after the completed leave action is cleaned up")
 			rsm.Status.CurrentGeneration = rsm.Generation
 			rsm.Status.Replicas = replicas
 			rsm.Status.ReadyReplicas = replicas
 			rsm.Status.AvailableReplicas = replicas
 			rsm.Status.UpdatedReplicas = replicas
-			action = mockAction(1, jobTypeMemberLeaveNotifying, true)
+			k8sMock.EXPECT().
+				List(gomock.Any(), &batchv1.JobList{}, gomock.Any()).
+				DoAndReturn(func(_ context.Context, list *batchv1.JobList, _ ...client.ListOption) error {
+					return nil
+				}).Times(1)
 			dag = mockDAG(stsOld, sts)
 			Expect(transformer.Transform(transCtx, dag)).Should(Succeed())
 			expectStsNoopAction(dag, false)
-			dagExpected = mockDAG(stsOld, sts)
-			graphCli.Update(dagExpected, action, action)
-			Expect(dag.Equals(dagExpected, less)).Should(BeTrue())
 		})
 	})
 })
