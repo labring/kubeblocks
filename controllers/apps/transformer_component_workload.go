@@ -74,6 +74,12 @@ type componentWorkloadOps struct {
 	protoRSM *workloads.ReplicatedStateMachine
 }
 
+const (
+	scaleInPVCsAnnotation   = "workloads.kubeblocks.io/scale-in-pvcs"
+	scaleInPVCsComplete     = "complete"
+	stableMembersAnnotation = rsmcore.StableMembersAnnotation
+)
+
 var _ graph.Transformer = &componentWorkloadTransformer{}
 
 func (t *componentWorkloadTransformer) Transform(ctx graph.TransformContext, dag *graph.DAG) error {
@@ -365,6 +371,15 @@ func (r *componentWorkloadOps) expandVolume() error {
 
 // horizontalScale handles rsm workload horizontal scale
 func (r *componentWorkloadOps) horizontalScale() error {
+	if r.hasMemberLeaveAction() && r.synthesizeComp.Replicas == 0 {
+		return fmt.Errorf("scale-to-zero is not supported for components with membership reconfiguration")
+	}
+	if pending, err := r.settlePendingScaleIn(); err != nil {
+		return err
+	} else if pending {
+		return nil
+	}
+
 	sts := rsmcore.ConvertRSMToSTS(r.runningRSM)
 	ret := r.horizontalScaling(r.synthesizeComp, sts)
 	if ret == 0 {
@@ -407,7 +422,63 @@ func (r *componentWorkloadOps) horizontalScaling(synthesizeComp *component.Synth
 }
 
 func (r *componentWorkloadOps) postScaleIn() error {
+	if !r.hasMemberLeaveAction() || r.runningRSM == nil || r.protoRSM == nil || !rsmcore.IsRSMReady(r.runningRSM) {
+		return nil
+	}
+	setRSMAnnotation(r.protoRSM, stableMembersAnnotation, strconv.Itoa(countVotingMembers(r.runningRSM.Status.MembersStatus)))
 	return nil
+}
+
+// settlePendingScaleIn serializes a new scaling request behind any prior
+// membership-managed scale-in. Removed members' disks must be deleted before
+// their ordinals can be recreated and joined to the current consensus group.
+func (r *componentWorkloadOps) settlePendingScaleIn() (bool, error) {
+	if r.runningRSM == nil || r.protoRSM == nil {
+		return false, nil
+	}
+	from, to, pending, err := parseScaleInPVCRange(r.runningRSM.Annotations[scaleInPVCsAnnotation])
+	if err != nil || !pending {
+		return false, err
+	}
+
+	sts := rsmcore.ConvertRSMToSTS(r.runningRSM)
+	if r.runningRSM.Spec.Replicas == nil || *r.runningRSM.Spec.Replicas != from ||
+		sts.Spec.Replicas == nil || *sts.Spec.Replicas != from ||
+		sts.Status.ObservedGeneration != sts.Generation || sts.Status.Replicas != from ||
+		sts.Status.ReadyReplicas != from || !rsmcore.IsRSMReady(r.runningRSM) {
+		model.NewGraphClient(r.cli).Noop(r.dag, r.protoRSM)
+		return true, nil
+	}
+
+	deleted, err := r.deletePVCsAfterScaleIn(from, to)
+	if err != nil {
+		return false, err
+	}
+	if deleted {
+		model.NewGraphClient(r.cli).Noop(r.dag, r.protoRSM)
+		return true, nil
+	}
+
+	setRSMAnnotation(r.protoRSM, scaleInPVCsAnnotation, scaleInPVCsComplete)
+	setRSMAnnotation(r.protoRSM, stableMembersAnnotation, strconv.Itoa(countVotingMembers(r.runningRSM.Status.MembersStatus)))
+	return true, nil
+}
+
+func setRSMAnnotation(rsm *workloads.ReplicatedStateMachine, key, value string) {
+	if rsm.Annotations == nil {
+		rsm.Annotations = map[string]string{}
+	}
+	rsm.Annotations[key] = value
+}
+
+func countVotingMembers(members []workloads.MemberStatus) int {
+	count := 0
+	for _, member := range members {
+		if member.CanVote {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *componentWorkloadOps) postScaleOut(stsObj *apps.StatefulSet) error {
@@ -441,16 +512,87 @@ func (r *componentWorkloadOps) postScaleOut(stsObj *apps.StatefulSet) error {
 func (r *componentWorkloadOps) scaleIn(stsObj *apps.StatefulSet) error {
 	// if scale in to 0, do not delete pvcs
 	if r.synthesizeComp.Replicas == 0 {
+		if r.hasMemberLeaveAction() {
+			return fmt.Errorf("scale-to-zero is not supported for components with membership reconfiguration")
+		}
 		r.reqCtx.Log.Info("scale in to 0, keep all PVCs")
 		return nil
 	}
-	// TODO: check the component definition to determine whether we need to call leave member before deleting replicas.
+	// The RSM controller runs native member-leave actions before it permits the
+	// StatefulSet to remove these ordinals. Persist the exact PVC range so a later
+	// stable reconcile cannot delete claims retained by an unrelated scale-to-zero.
+	if r.hasMemberLeaveAction() {
+		if pending := r.runningRSM.Annotations[scaleInPVCsAnnotation]; pending != "" && pending != scaleInPVCsComplete {
+			return fmt.Errorf("previous scale-in PVC cleanup %q is still pending", pending)
+		}
+		if r.protoRSM.Annotations == nil {
+			r.protoRSM.Annotations = map[string]string{}
+		}
+		r.protoRSM.Annotations[scaleInPVCsAnnotation] = formatScaleInPVCRange(r.synthesizeComp.Replicas, *stsObj.Spec.Replicas)
+		return nil
+	}
 	err := r.leaveMember4ScaleIn(stsObj)
 	if err != nil {
 		r.reqCtx.Log.Info(fmt.Sprintf("leave member at scaling-in error, retry later: %s", err.Error()))
 		return err
 	}
 	return r.deletePVCs4ScaleIn(stsObj)
+}
+
+func formatScaleInPVCRange(from, to int32) string {
+	return fmt.Sprintf("%d:%d", from, to)
+}
+
+func parseScaleInPVCRange(value string) (int32, int32, bool, error) {
+	if value == "" || value == scaleInPVCsComplete {
+		return 0, 0, false, nil
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return 0, 0, false, fmt.Errorf("invalid scale-in PVC range annotation %q", value)
+	}
+	from, err := strconv.ParseInt(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("invalid scale-in PVC range annotation %q: %w", value, err)
+	}
+	to, err := strconv.ParseInt(parts[1], 10, 32)
+	if err != nil || from <= 0 || to <= from {
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("invalid scale-in PVC range annotation %q: %w", value, err)
+		}
+		return 0, 0, false, fmt.Errorf("invalid scale-in PVC range annotation %q", value)
+	}
+	return int32(from), int32(to), true, nil
+}
+
+func (r *componentWorkloadOps) hasMemberLeaveAction() bool {
+	return r.protoRSM != nil && r.protoRSM.Spec.MembershipReconfiguration != nil &&
+		r.protoRSM.Spec.MembershipReconfiguration.MemberLeaveAction != nil
+}
+
+// deletePVCsAfterScaleIn removes only the claims belonging to ordinals removed
+// by the recorded scale-in. It leaves out-of-range and retained claims alone.
+func (r *componentWorkloadOps) deletePVCsAfterScaleIn(from, to int32) (bool, error) {
+	graphCli := model.NewGraphClient(r.cli)
+	deleted := false
+	for _, vct := range r.runningRSM.Spec.VolumeClaimTemplates {
+		for ordinal := from; ordinal < to; ordinal++ {
+			pvc := &corev1.PersistentVolumeClaim{}
+			pvcKey := types.NamespacedName{
+				Namespace: r.runningRSM.Namespace,
+				Name:      fmt.Sprintf("%s-%s-%d", vct.Name, r.runningRSM.Name, ordinal),
+			}
+			if err := r.cli.Get(r.reqCtx.Ctx, pvcKey, pvc); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return false, err
+			}
+			deleted = true
+			graphCli.Delete(r.dag, pvc)
+		}
+	}
+	return deleted, nil
 }
 
 func (r *componentWorkloadOps) scaleOut(stsObj *apps.StatefulSet) error {

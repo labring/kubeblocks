@@ -274,6 +274,16 @@ func getHeadlessSvcName(rsm workloads.ReplicatedStateMachine) string {
 
 func findSvcPort(rsm workloads.ReplicatedStateMachine) int {
 	if rsm.Spec.Service == nil || len(rsm.Spec.Service.Spec.Ports) == 0 {
+		// ComponentDefinition-based RSMs do not populate spec.service. Their
+		// headless service is built from the pod template's declared container
+		// ports, so use its first TCP port as the action connection port too.
+		for _, container := range rsm.Spec.Template.Spec.Containers {
+			for _, port := range container.Ports {
+				if port.ContainerPort > 0 && (port.Protocol == "" || port.Protocol == corev1.ProtocolTCP) {
+					return int(port.ContainerPort)
+				}
+			}
+		}
 		return 0
 	}
 	port := rsm.Spec.Service.Spec.Ports[0]
@@ -353,14 +363,20 @@ func buildAction(rsm *workloads.ReplicatedStateMachine, actionName, actionType, 
 	env := buildActionEnv(rsm, leader, target)
 	template := buildActionPodTemplate(rsm, env, actionType)
 	labels := getLabels(rsm)
-	return builder.NewJobBuilder(rsm.Namespace, actionName).
+	jobBuilder := builder.NewJobBuilder(rsm.Namespace, actionName).
 		AddLabelsInMap(labels).
 		AddLabels(jobScenarioLabel, actionScenario).
 		AddLabels(jobTypeLabel, actionType).
 		AddLabels(jobHandledLabel, jobHandledFalse).
 		SetSuspend(false).
-		SetPodTemplateSpec(*template).
-		GetObject()
+		SetPodTemplateSpec(*template)
+	if actionType == jobTypeMemberJoinNotifying {
+		// The action script checks native membership before adding, so bounded Job
+		// retries can recover from transient client or network failures safely.
+		backoffLimit := int32(3)
+		jobBuilder.SetBackoffLimit(backoffLimit)
+	}
+	return jobBuilder.GetObject()
 }
 
 func buildActionPodTemplate(rsm *workloads.ReplicatedStateMachine, env []corev1.EnvVar, actionType string) *corev1.PodTemplateSpec {
@@ -390,10 +406,15 @@ func buildActionPodTemplate(rsm *workloads.ReplicatedStateMachine, env []corev1.
 		Command:         command,
 		Env:             env,
 	}
+	restartPolicy := corev1.RestartPolicyOnFailure
+	if actionType == jobTypeMemberJoinNotifying {
+		// Let the Job controller create a bounded number of fresh action Pods.
+		restartPolicy = corev1.RestartPolicyNever
+	}
 	template := &corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			Containers:    []corev1.Container{container},
-			RestartPolicy: corev1.RestartPolicyOnFailure,
+			RestartPolicy: restartPolicy,
 		},
 	}
 	return template
@@ -708,23 +729,47 @@ func IsRSMReady(rsm *workloads.ReplicatedStateMachine) bool {
 			return false
 		}
 	}
-	hasLeader := false
+	leaderCount := 0
+	hasReadyWithoutPrimary := false
 	for _, status := range membersStatus {
 		if status.ReadyWithoutPrimary {
-			return true
+			hasReadyWithoutPrimary = true
 		}
 		if status.IsLeader {
-			hasLeader = true
-			break
+			leaderCount++
 		}
 	}
-	return hasLeader
+	// ReadyWithoutPrimary preserves readiness for systems that allow zero primaries,
+	// but must not mask a split view that reports multiple primaries.
+	if countLeaderRoles(rsm.Spec.Roles) == 1 {
+		return leaderCount == 1 || (leaderCount == 0 && hasReadyWithoutPrimary)
+	}
+	return hasReadyWithoutPrimary || leaderCount > 0
+}
+
+func countLeaderRoles(roles []workloads.ReplicaRole) int {
+	count := 0
+	for _, role := range roles {
+		if role.IsLeader {
+			count++
+		}
+	}
+	return count
 }
 
 func isMemberReady(podName string, membersStatus []workloads.MemberStatus) bool {
 	for _, memberStatus := range membersStatus {
 		if memberStatus.PodName == podName {
 			return true
+		}
+	}
+	return false
+}
+
+func isMemberVoting(podName string, membersStatus []workloads.MemberStatus) bool {
+	for _, memberStatus := range membersStatus {
+		if memberStatus.PodName == podName {
+			return memberStatus.CanVote
 		}
 	}
 	return false

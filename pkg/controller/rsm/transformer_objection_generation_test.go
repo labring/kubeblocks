@@ -190,6 +190,7 @@ var _ = Describe("object generation transformer test.", func() {
 	Context("buildEnvConfigData function", func() {
 		It("should work well", func() {
 			By("build env config data")
+			rsm.Status.InitReplicas = 1
 			rsm.Status.MembersStatus = []workloads.MemberStatus{
 				{
 					PodName:     getPodName(rsm.Name, 1),
@@ -216,6 +217,7 @@ var _ = Describe("object generation transformer test.", func() {
 				_, ok := cfg[k]
 				Expect(ok).Should(BeTrue())
 			}
+			Expect(cfg[initReplicasVarName]).Should(Equal("1"))
 
 			By("builds Env Config with ConsensusSet status correctly")
 			toCheckKeys := append(requiredKeys, []string{
@@ -226,6 +228,89 @@ var _ = Describe("object generation transformer test.", func() {
 				_, ok := cfg[k]
 				Expect(ok).Should(BeTrue())
 			}
+		})
+
+		It("keeps the initial replica boundary during ordered bootstrap", func() {
+			rsmCopy := rsm.DeepCopy()
+			rsmCopy.Spec.MembershipReconfiguration = &workloads.MembershipReconfiguration{
+				MemberJoinAction: &workloads.Action{},
+			}
+			rsmCopy.Status.InitReplicas = 3
+			rsmCopy.Status.ReadyInitReplicas = 1
+			rsmCopy.Status.MembersStatus = []workloads.MemberStatus{{
+				PodName:     getPodName(rsmCopy.Name, 0),
+				ReplicaRole: workloads.ReplicaRole{Name: "leader", CanVote: true, IsLeader: true},
+			}}
+
+			cfg := buildEnvConfigData(*rsmCopy)
+			Expect(cfg[currentMembersVarName]).Should(Equal("3"))
+		})
+
+		It("counts only voting members after scale-in and while learners join", func() {
+			rsmCopy := rsm.DeepCopy()
+			rsmCopy.Spec.MembershipReconfiguration = &workloads.MembershipReconfiguration{
+				MemberJoinAction: &workloads.Action{},
+			}
+			rsmCopy.Status.InitReplicas = 3
+			rsmCopy.Status.ReadyInitReplicas = 3
+			rsmCopy.Status.MembersStatus = []workloads.MemberStatus{
+				{PodName: getPodName(rsmCopy.Name, 0), ReplicaRole: workloads.ReplicaRole{Name: "leader", CanVote: true, IsLeader: true}},
+				{PodName: getPodName(rsmCopy.Name, 1), ReplicaRole: workloads.ReplicaRole{Name: "learner", CanVote: false}},
+			}
+
+			cfg := buildEnvConfigData(*rsmCopy)
+			Expect(cfg[currentMembersVarName]).Should(Equal("1"))
+		})
+
+		It("keeps initial candidates until ordered bootstrap is complete", func() {
+			for ready := int32(0); ready < 3; ready++ {
+				rsmCopy := rsm.DeepCopy()
+				rsmCopy.Spec.MembershipReconfiguration = &workloads.MembershipReconfiguration{
+					MemberJoinAction: &workloads.Action{},
+				}
+				rsmCopy.Status.InitReplicas = 3
+				rsmCopy.Status.ReadyInitReplicas = ready
+				for i := int32(0); i < ready; i++ {
+					role := workloads.ReplicaRole{Name: "follower", CanVote: true}
+					if i == 0 {
+						role = workloads.ReplicaRole{Name: "leader", CanVote: true, IsLeader: true}
+					}
+					rsmCopy.Status.MembersStatus = append(rsmCopy.Status.MembersStatus, workloads.MemberStatus{
+						PodName:     getPodName(rsmCopy.Name, int(i)),
+						ReplicaRole: role,
+					})
+				}
+
+				cfg := buildEnvConfigData(*rsmCopy)
+				Expect(cfg[currentMembersVarName]).Should(Equal("3"))
+				Expect(cfg[bootstrapCompleteVarName]).Should(Equal("false"))
+			}
+		})
+
+		It("marks post-bootstrap membership state explicitly and fails closed on unknown voters", func() {
+			rsmCopy := rsm.DeepCopy()
+			rsmCopy.Spec.MembershipReconfiguration = &workloads.MembershipReconfiguration{
+				MemberJoinAction: &workloads.Action{},
+			}
+			rsmCopy.Status.InitReplicas = 3
+			rsmCopy.Status.ReadyInitReplicas = 3
+			rsmCopy.Status.MembersStatus = []workloads.MemberStatus{{
+				PodName:     getPodName(rsmCopy.Name, 0),
+				ReplicaRole: workloads.ReplicaRole{Name: "leader", CanVote: true, IsLeader: true},
+			}}
+
+			cfg := buildEnvConfigData(*rsmCopy)
+			Expect(cfg[currentMembersVarName]).Should(Equal("1"))
+			Expect(cfg[bootstrapCompleteVarName]).Should(Equal("true"))
+
+			rsmCopy.Status.MembersStatus = nil
+			cfg = buildEnvConfigData(*rsmCopy)
+			Expect(cfg[currentMembersVarName]).Should(Equal("0"))
+			Expect(cfg[bootstrapCompleteVarName]).Should(Equal("true"))
+
+			rsmCopy.Annotations = map[string]string{StableMembersAnnotation: "2"}
+			cfg = buildEnvConfigData(*rsmCopy)
+			Expect(cfg[currentMembersVarName]).Should(Equal("2"))
 		})
 	})
 
