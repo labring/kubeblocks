@@ -481,13 +481,18 @@ var _ = Describe("vars", func() {
 						Services: []appsv1alpha1.ComponentService{},
 					},
 				}
+				podService := true
 				for _, name := range []string{"non-exist", "service", "service-wo-port-name", "pod-service", "lb", "advertised"} {
-					compDef.Spec.Services = append(compDef.Spec.Services, appsv1alpha1.ComponentService{
+					compService := appsv1alpha1.ComponentService{
 						Service: appsv1alpha1.Service{
 							Name:        name,
 							ServiceName: name,
 						},
-					})
+					}
+					if name == "pod-service" {
+						compService.PodService = &podService
+					}
+					compDef.Spec.Services = append(compDef.Spec.Services, compService)
 				}
 				reader = &mockReader{
 					cli:  testCtx.Cli,
@@ -823,7 +828,7 @@ var _ = Describe("vars", func() {
 				checkEnvVarWithValue(envVars, "service-node-port", strconv.Itoa(nodePort+1))
 			})
 
-			It("pod service", func() {
+			It("pod service ignores a component-level service with the same name", func() {
 				svcName0 := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "pod-service-0")
 				svcName1 := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "pod-service-1")
 				svcPort := 3306
@@ -862,6 +867,21 @@ var _ = Describe("vars", func() {
 					},
 				}
 				reader.objs = append(reader.objs, []client.Object{
+					&corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: testCtx.DefaultNamespace,
+							Name:      constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "pod-service"),
+							Labels:    constant.GetComponentWellKnownLabels(synthesizedComp.ClusterName, synthesizedComp.Name),
+						},
+						Spec: corev1.ServiceSpec{
+							Ports: []corev1.ServicePort{
+								{
+									Name: "default",
+									Port: int32(svcPort),
+								},
+							},
+						},
+					},
 					&corev1.Service{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: testCtx.DefaultNamespace,

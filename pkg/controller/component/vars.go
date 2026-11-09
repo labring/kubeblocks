@@ -1018,6 +1018,7 @@ func clusterServiceGetter(ctx context.Context, cli client.Reader, namespace, clu
 }
 
 func compServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName, name string) (any, error) {
+	podService := false
 	svcName, err := func() (string, error) {
 		if len(name) == 0 {
 			return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
@@ -1030,6 +1031,7 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 		}
 		for _, svc := range compDef.Spec.Services {
 			if svc.Name == name {
+				podService = svc.PodService != nil && *svc.PodService
 				return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
 			}
 		}
@@ -1037,6 +1039,32 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 	}()
 	if err != nil {
 		return nil, err
+	}
+
+	listPodServices := func() (any, error) {
+		svcList := &corev1.ServiceList{}
+		matchingLabels := client.MatchingLabels(constant.GetComponentWellKnownLabels(clusterName, compName))
+		if listErr := cli.List(ctx, svcList, matchingLabels, inDataContext()); listErr != nil {
+			return nil, listErr
+		}
+		objs := make([]*corev1.Service, 0)
+		podServiceNamePrefix := fmt.Sprintf("%s-", svcName)
+		for i, svc := range svcList.Items {
+			if strings.HasPrefix(svc.Name, podServiceNamePrefix) {
+				objs = append(objs, &svcList.Items[i])
+			}
+		}
+		if len(objs) == 0 {
+			return nil, apierrors.NewNotFound(corev1.Resource("service"), name)
+		}
+		return &resolvedServiceObj{podServices: objs}, nil
+	}
+
+	// A pod-service is exposed through one Service per Pod. Ignore a stale
+	// component-level Service with the same prefix, otherwise port vars are
+	// resolved to a single value without the required service-name mapping.
+	if podService {
+		return listPodServices()
 	}
 
 	key := types.NamespacedName{
@@ -1053,23 +1081,7 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 	}
 
 	// fall-back to list services and find the matched prefix
-	svcList := &corev1.ServiceList{}
-	matchingLabels := client.MatchingLabels(constant.GetComponentWellKnownLabels(clusterName, compName))
-	err = cli.List(ctx, svcList, matchingLabels, inDataContext())
-	if err != nil {
-		return nil, err
-	}
-	objs := make([]*corev1.Service, 0)
-	podServiceNamePrefix := fmt.Sprintf("%s-", svcName)
-	for i, svc := range svcList.Items {
-		if strings.HasPrefix(svc.Name, podServiceNamePrefix) {
-			objs = append(objs, &svcList.Items[i])
-		}
-	}
-	if len(objs) == 0 {
-		return nil, apierrors.NewNotFound(corev1.Resource("service"), name)
-	}
-	return &resolvedServiceObj{podServices: objs}, nil
+	return listPodServices()
 }
 
 func headlessCompServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName string) (any, error) {

@@ -564,6 +564,7 @@ var _ = Describe("build service references", func() {
 					},
 				}
 			}
+			podService := true
 			reader := &mockReader{
 				cli: testCtx.Cli,
 				objs: []client.Object{
@@ -590,6 +591,22 @@ var _ = Describe("build service references", func() {
 										Name:        "peer",
 										ServiceName: "peer",
 									},
+									PodService: &podService,
+								},
+							},
+						},
+					},
+					&corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: namespace,
+							Name:      constant.GenerateComponentServiceName(etcdCluster, etcdComponent, "peer"),
+							Labels:    constant.GetComponentWellKnownLabels(etcdCluster, etcdComponent),
+						},
+						Spec: corev1.ServiceSpec{
+							Ports: []corev1.ServicePort{
+								{
+									Name: "peer",
+									Port: 2380,
 								},
 							},
 						},
