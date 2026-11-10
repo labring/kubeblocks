@@ -1134,13 +1134,21 @@ var _ = Describe("vars", func() {
 				checkEnvVarWithValue(envVars, "default-service-port", strconv.Itoa(svcPort))
 			})
 
-			It("default pod service is scoped to the component namespace", func() {
+			It("empty service references select a default pod service with any logical name", func() {
 				podService := true
+				reader.objs[0].(*appsv1alpha1.Component).Spec.Services = []appsv1alpha1.ComponentService{
+					{
+						Service: appsv1alpha1.Service{
+							Name: "peer",
+						},
+						PodService: &podService,
+					},
+				}
 				reader.objs[1].(*appsv1alpha1.ComponentDefinition).Spec.Services = append(
 					reader.objs[1].(*appsv1alpha1.ComponentDefinition).Spec.Services,
 					appsv1alpha1.ComponentService{
 						Service: appsv1alpha1.Service{
-							Name: "default",
+							Name: "peer",
 						},
 						PodService: &podService,
 					},
@@ -1169,6 +1177,21 @@ var _ = Describe("vars", func() {
 					}
 				}
 				reader.objs = append(reader.objs, []client.Object{
+					&corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: synthesizedComp.Namespace,
+							Name:      svcName,
+							Labels:    labels,
+						},
+						Spec: corev1.ServiceSpec{
+							Ports: []corev1.ServicePort{
+								{
+									Name: "default",
+									Port: int32(svcPort),
+								},
+							},
+						},
+					},
 					newPodService(synthesizedComp.Namespace, svcName0, svcPort),
 					newPodService(synthesizedComp.Namespace, svcName1, svcPort+1),
 					newPodService("other-namespace", svcName0, svcPort+100),

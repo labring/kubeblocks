@@ -1019,10 +1019,6 @@ func clusterServiceGetter(ctx context.Context, cli client.Reader, namespace, clu
 
 func compServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName, name string) (any, error) {
 	podService := false
-	definitionServiceName := name
-	if len(definitionServiceName) == 0 {
-		definitionServiceName = "default"
-	}
 	svcName, err := func() (string, error) {
 		// resolve service name from referenced component definition
 		comp, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
@@ -1037,13 +1033,13 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 			componentServices[svc.Name] = comp.Spec.Services[i]
 		}
 		for _, svc := range compDef.Spec.Services {
-			if svc.Name != definitionServiceName {
+			if len(name) > 0 && svc.Name != name {
 				continue
 			}
 			if len(name) == 0 && len(svc.ServiceName) > 0 {
 				continue
 			}
-			if componentService, ok := componentServices[definitionServiceName]; ok {
+			if componentService, ok := componentServices[svc.Name]; ok {
 				svc.PodService = componentService.PodService
 			}
 			podService = svc.PodService != nil && *svc.PodService
