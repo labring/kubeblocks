@@ -1019,14 +1019,17 @@ func clusterServiceGetter(ctx context.Context, cli client.Reader, namespace, clu
 
 func compServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName, name string) (any, error) {
 	podService := false
+	definitionServiceName := name
+	if len(definitionServiceName) == 0 {
+		definitionServiceName = "default"
+	}
 	svcName, err := func() (string, error) {
-		if len(name) == 0 {
-			return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
-		}
-
 		// resolve service name from referenced component definition
 		comp, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
 		if err != nil {
+			if len(name) == 0 && apierrors.IsNotFound(err) {
+				return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
+			}
 			return "", err
 		}
 		componentServices := map[string]appsv1alpha1.ComponentService{}
@@ -1034,14 +1037,20 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 			componentServices[svc.Name] = comp.Spec.Services[i]
 		}
 		for _, svc := range compDef.Spec.Services {
-			if svc.Name != name {
+			if svc.Name != definitionServiceName {
 				continue
 			}
-			if componentService, ok := componentServices[name]; ok {
+			if len(name) == 0 && len(svc.ServiceName) > 0 {
+				continue
+			}
+			if componentService, ok := componentServices[definitionServiceName]; ok {
 				svc.PodService = componentService.PodService
 			}
 			podService = svc.PodService != nil && *svc.PodService
 			return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
+		}
+		if len(name) == 0 {
+			return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
 		}
 		return "", fmt.Errorf("service %s not defined in the component definition that component %s used", name, compName)
 	}()
@@ -1052,13 +1061,12 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 	listPodServices := func() (any, error) {
 		svcList := &corev1.ServiceList{}
 		matchingLabels := client.MatchingLabels(constant.GetComponentWellKnownLabels(clusterName, compName))
-		if listErr := cli.List(ctx, svcList, matchingLabels, inDataContext()); listErr != nil {
+		if listErr := cli.List(ctx, svcList, client.InNamespace(namespace), matchingLabels, inDataContext()); listErr != nil {
 			return nil, listErr
 		}
 		objs := make([]*corev1.Service, 0)
-		podServiceNamePrefix := fmt.Sprintf("%s-", svcName)
 		for i, svc := range svcList.Items {
-			if strings.HasPrefix(svc.Name, podServiceNamePrefix) {
+			if isPodServiceName(svcName, svc.Name) {
 				objs = append(objs, &svcList.Items[i])
 			}
 		}
@@ -1090,6 +1098,19 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 
 	// fall-back to list services and find the matched prefix
 	return listPodServices()
+}
+
+func isPodServiceName(serviceName, name string) bool {
+	ordinal, ok := strings.CutPrefix(name, serviceName+"-")
+	if !ok || len(ordinal) == 0 {
+		return false
+	}
+	for _, char := range ordinal {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func headlessCompServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName string) (any, error) {
