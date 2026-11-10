@@ -923,6 +923,160 @@ var _ = Describe("vars", func() {
 				checkEnvVarWithValue(envVars, "pod-service-port", strings.Join([]string{fmt.Sprintf("%s:300001", svcName0), fmt.Sprintf("%s:300002", svcName1)}, ","))
 			})
 
+			It("pod service disabled by component override", func() {
+				podService := false
+				reader.objs[0].(*appsv1alpha1.Component).Spec.Services = []appsv1alpha1.ComponentService{
+					{
+						Service: appsv1alpha1.Service{
+							Name:        "pod-service",
+							ServiceName: "pod-service",
+						},
+						PodService: &podService,
+					},
+				}
+				svcName := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "pod-service")
+				svcPort := 3306
+				reader.objs = append(reader.objs, &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: testCtx.DefaultNamespace,
+						Name:      svcName,
+						Labels:    constant.GetComponentWellKnownLabels(synthesizedComp.ClusterName, synthesizedComp.Name),
+					},
+					Spec: corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{
+							{
+								Name: "default",
+								Port: int32(svcPort),
+							},
+						},
+					},
+				})
+
+				vars := []appsv1alpha1.EnvVar{
+					{
+						Name: "pod-service-endpoint",
+						ValueFrom: &appsv1alpha1.VarSource{
+							ServiceVarRef: &appsv1alpha1.ServiceVarSelector{
+								ClusterObjectReference: appsv1alpha1.ClusterObjectReference{
+									Name:     "pod-service",
+									Optional: required(),
+								},
+								ServiceVars: appsv1alpha1.ServiceVars{
+									Host: &appsv1alpha1.VarRequired,
+								},
+							},
+						},
+					},
+					{
+						Name: "pod-service-port",
+						ValueFrom: &appsv1alpha1.VarSource{
+							ServiceVarRef: &appsv1alpha1.ServiceVarSelector{
+								ClusterObjectReference: appsv1alpha1.ClusterObjectReference{
+									Name:     "pod-service",
+									Optional: required(),
+								},
+								ServiceVars: appsv1alpha1.ServiceVars{
+									Port: &appsv1alpha1.NamedVar{
+										Name:   "default",
+										Option: &appsv1alpha1.VarRequired,
+									},
+								},
+							},
+						},
+					},
+				}
+				_, envVars, err := ResolveTemplateNEnvVars(testCtx.Ctx, reader, synthesizedComp, vars)
+				Expect(err).Should(Succeed())
+				checkEnvVarWithValue(envVars, "pod-service-endpoint", svcName)
+				checkEnvVarWithValue(envVars, "pod-service-port", strconv.Itoa(svcPort))
+			})
+
+			It("pod service enabled by component override", func() {
+				podService := true
+				reader.objs[0].(*appsv1alpha1.Component).Spec.Services = []appsv1alpha1.ComponentService{
+					{
+						Service: appsv1alpha1.Service{
+							Name:        "service",
+							ServiceName: "service",
+						},
+						PodService: &podService,
+					},
+				}
+				svcName0 := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "service-0")
+				svcName1 := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "service-1")
+				svcPort := 3306
+				reader.objs = append(reader.objs, []client.Object{
+					&corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: testCtx.DefaultNamespace,
+							Name:      svcName0,
+							Labels:    constant.GetComponentWellKnownLabels(synthesizedComp.ClusterName, synthesizedComp.Name),
+						},
+						Spec: corev1.ServiceSpec{
+							Ports: []corev1.ServicePort{
+								{
+									Name: "default",
+									Port: int32(svcPort),
+								},
+							},
+						},
+					},
+					&corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: testCtx.DefaultNamespace,
+							Name:      svcName1,
+							Labels:    constant.GetComponentWellKnownLabels(synthesizedComp.ClusterName, synthesizedComp.Name),
+						},
+						Spec: corev1.ServiceSpec{
+							Ports: []corev1.ServicePort{
+								{
+									Name: "default",
+									Port: int32(svcPort + 1),
+								},
+							},
+						},
+					},
+				}...)
+
+				vars := []appsv1alpha1.EnvVar{
+					{
+						Name: "service-endpoint",
+						ValueFrom: &appsv1alpha1.VarSource{
+							ServiceVarRef: &appsv1alpha1.ServiceVarSelector{
+								ClusterObjectReference: appsv1alpha1.ClusterObjectReference{
+									Name:     "service",
+									Optional: required(),
+								},
+								ServiceVars: appsv1alpha1.ServiceVars{
+									Host: &appsv1alpha1.VarRequired,
+								},
+							},
+						},
+					},
+					{
+						Name: "service-port",
+						ValueFrom: &appsv1alpha1.VarSource{
+							ServiceVarRef: &appsv1alpha1.ServiceVarSelector{
+								ClusterObjectReference: appsv1alpha1.ClusterObjectReference{
+									Name:     "service",
+									Optional: required(),
+								},
+								ServiceVars: appsv1alpha1.ServiceVars{
+									Port: &appsv1alpha1.NamedVar{
+										Name:   "default",
+										Option: &appsv1alpha1.VarRequired,
+									},
+								},
+							},
+						},
+					},
+				}
+				_, envVars, err := ResolveTemplateNEnvVars(testCtx.Ctx, reader, synthesizedComp, vars)
+				Expect(err).Should(Succeed())
+				checkEnvVarWithValue(envVars, "service-endpoint", strings.Join([]string{svcName0, svcName1}, ","))
+				checkEnvVarWithValue(envVars, "service-port", strings.Join([]string{fmt.Sprintf("%s:%d", svcName0, svcPort), fmt.Sprintf("%s:%d", svcName1, svcPort+1)}, ","))
+			})
+
 			It("load balancer", func() {
 				lbSvcName := constant.GenerateComponentServiceName(synthesizedComp.ClusterName, synthesizedComp.Name, "lb")
 				svcPort := 3306

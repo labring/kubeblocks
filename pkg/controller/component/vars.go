@@ -1025,15 +1025,23 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 		}
 
 		// resolve service name from referenced component definition
-		_, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
+		comp, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
 		if err != nil {
 			return "", err
 		}
+		componentServices := map[string]appsv1alpha1.ComponentService{}
+		for i, svc := range comp.Spec.Services {
+			componentServices[svc.Name] = comp.Spec.Services[i]
+		}
 		for _, svc := range compDef.Spec.Services {
-			if svc.Name == name {
-				podService = svc.PodService != nil && *svc.PodService
-				return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
+			if svc.Name != name {
+				continue
 			}
+			if componentService, ok := componentServices[name]; ok {
+				svc.PodService = componentService.PodService
+			}
+			podService = svc.PodService != nil && *svc.PodService
+			return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
 		}
 		return "", fmt.Errorf("service %s not defined in the component definition that component %s used", name, compName)
 	}()
