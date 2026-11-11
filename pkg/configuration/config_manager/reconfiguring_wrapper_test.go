@@ -20,6 +20,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package configmanager
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -59,6 +62,121 @@ var _ = Describe("Handler Util Test", func() {
 			_, err = NewCommandChannel(ctx, "", "localhost")
 			Expect(err).ShouldNot(Succeed())
 			Expect(err.Error()).Should(ContainSubstring("not supported type"))
+		})
+	})
+
+	Context("TestPGPatroniConnection", func() {
+		setCredentials := func(username, password string) {
+			os.Setenv(patroniRestAPIUsernameEnv, username)
+			os.Setenv(patroniRestAPIPasswordEnv, password)
+			DeferCleanup(os.Unsetenv, patroniRestAPIUsernameEnv)
+			DeferCleanup(os.Unsetenv, patroniRestAPIPasswordEnv)
+		}
+		unsetCredentials := func() {
+			os.Unsetenv(patroniRestAPIUsernameEnv)
+			os.Unsetenv(patroniRestAPIPasswordEnv)
+			DeferCleanup(os.Unsetenv, patroniRestAPIUsernameEnv)
+			DeferCleanup(os.Unsetenv, patroniRestAPIPasswordEnv)
+		}
+
+		It("validates REST API credentials", func() {
+			By("allowing authentication to be disabled")
+			unsetCredentials()
+			conn, err := newPGPatroniConnection("localhost")
+			Expect(err).Should(Succeed())
+			channel, ok := conn.(*pgPatroniCommandChannel)
+			Expect(ok).Should(BeTrue())
+			Expect(channel.credentials).Should(Equal(patroniRESTCredentials{}))
+
+			By("allowing a username and password pair")
+			setCredentials("patroni-user", "patroni-password")
+			conn, err = newPGPatroniConnection("localhost")
+			Expect(err).Should(Succeed())
+			channel, ok = conn.(*pgPatroniCommandChannel)
+			Expect(ok).Should(BeTrue())
+			Expect(channel.credentials).Should(Equal(patroniRESTCredentials{
+				username: "patroni-user",
+				password: "patroni-password",
+			}))
+
+			By("rejecting partial credentials")
+			setCredentials("patroni-user", "")
+			_, err = newPGPatroniConnection("localhost")
+			Expect(err).ShouldNot(Succeed())
+			Expect(err.Error()).Should(ContainSubstring("must be set together"))
+
+			By("rejecting empty credentials when authentication is configured")
+			setCredentials("", "")
+			_, err = newPGPatroniConnection("localhost")
+			Expect(err).ShouldNot(Succeed())
+			Expect(err.Error()).Should(ContainSubstring("must not be empty"))
+		})
+
+		It("sends Basic Auth to every Patroni endpoint", func() {
+			requests := make([]string, 0)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "patroni-user" || password != "patroni-password" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				w.WriteHeader(http.StatusOK)
+			}))
+			DeferCleanup(server.Close)
+
+			channel := &pgPatroniCommandChannel{
+				restapiURL: server.URL,
+				credentials: patroniRESTCredentials{
+					username: "patroni-user",
+					password: "patroni-password",
+				},
+			}
+			_, err := channel.ExecCommand(ctx, `{"pg_hba":[]}`, "config")
+			Expect(err).Should(Succeed())
+			_, err = channel.ExecCommand(ctx, "", "reload")
+			Expect(err).Should(Succeed())
+			_, err = channel.ExecCommand(ctx, "", "restart")
+			Expect(err).Should(Succeed())
+			Expect(requests).Should(Equal([]string{
+				"PATCH /config",
+				"POST /reload",
+				"POST /restart",
+			}))
+		})
+
+		It("does not send Authorization when authentication is disabled", func() {
+			authorized := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				authorized = r.Header.Get("Authorization") != ""
+				w.WriteHeader(http.StatusOK)
+			}))
+			DeferCleanup(server.Close)
+
+			channel := &pgPatroniCommandChannel{restapiURL: server.URL}
+			_, err := channel.ExecCommand(ctx, "", "reload")
+			Expect(err).Should(Succeed())
+			Expect(authorized).Should(BeFalse())
+		})
+
+		It("rejects non-2xx responses", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("unauthorized"))
+			}))
+			DeferCleanup(server.Close)
+
+			channel := &pgPatroniCommandChannel{
+				restapiURL: server.URL,
+				credentials: patroniRESTCredentials{
+					username: "patroni-user",
+					password: "patroni-password",
+				},
+			}
+			result, err := channel.ExecCommand(ctx, `{"pg_hba":[]}`, "config")
+			Expect(err).ShouldNot(Succeed())
+			Expect(err.Error()).Should(ContainSubstring("401 Unauthorized"))
+			Expect(result).Should(BeEmpty())
 		})
 	})
 

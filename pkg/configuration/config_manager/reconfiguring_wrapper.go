@@ -51,10 +51,12 @@ const (
 
 	connectTimeout = 30 * time.Second
 
-	mysql             = "mysql"
-	patroni           = "patroni"
-	mysqlDsnEnv       = "DATA_SOURCE_NAME"
-	patroniRestAPIURL = "PATRONI_REST_API_URL"
+	mysql                     = "mysql"
+	patroni                   = "patroni"
+	mysqlDsnEnv               = "DATA_SOURCE_NAME"
+	patroniRestAPIURL         = "PATRONI_REST_API_URL"
+	patroniRestAPIUsernameEnv = "PATRONI_RESTAPI_USERNAME"
+	patroniRestAPIPasswordEnv = "PATRONI_RESTAPI_PASSWORD"
 )
 
 func NewCommandChannel(ctx context.Context, dataType, dsn string) (DynamicParamUpdater, error) {
@@ -132,8 +134,14 @@ func (m *mysqlCommandChannel) Close() {
 	logger.V(1).Info("closed mysql connection.")
 }
 
+type patroniRESTCredentials struct {
+	username string
+	password string
+}
+
 type pgPatroniCommandChannel struct {
-	restapiURL string
+	restapiURL  string
+	credentials patroniRESTCredentials
 }
 
 func (p *pgPatroniCommandChannel) ExecCommand(ctx context.Context, command string, args ...string) (string, error) {
@@ -152,9 +160,9 @@ func (p *pgPatroniCommandChannel) ExecCommand(ctx context.Context, command strin
 	logger.V(1).Info(fmt.Sprintf("exec patroni command: %s", functional))
 	switch functional {
 	case Config:
-		return sendRestRequest(ctx, command, restPath, "PATCH")
+		return p.sendRestRequest(ctx, command, restPath, http.MethodPatch)
 	case Restart, Reload:
-		return sendRestRequest(ctx, command, restPath, "POST")
+		return p.sendRestRequest(ctx, command, restPath, http.MethodPost)
 	}
 	return "", cfgcore.MakeError("not supported patroni function: [%s]", args[0])
 }
@@ -170,11 +178,33 @@ func newPGPatroniConnection(hostURL string) (DynamicParamUpdater, error) {
 	if hostURL == "" {
 		return nil, cfgcore.MakeError("require PATRONI_REST_API_URL env.")
 	}
+	credentials, err := patroniRESTCredentialsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 
-	return &pgPatroniCommandChannel{restapiURL: formatRestAPIPath(hostURL)}, nil
+	return &pgPatroniCommandChannel{
+		restapiURL:  formatRestAPIPath(hostURL),
+		credentials: credentials,
+	}, nil
 }
 
-func sendRestRequest(ctx context.Context, body string, url string, method string) (string, error) {
+func patroniRESTCredentialsFromEnv() (patroniRESTCredentials, error) {
+	username, usernameSet := os.LookupEnv(patroniRestAPIUsernameEnv)
+	password, passwordSet := os.LookupEnv(patroniRestAPIPasswordEnv)
+	if !usernameSet && !passwordSet {
+		return patroniRESTCredentials{}, nil
+	}
+	if !usernameSet || !passwordSet || username == "" || password == "" {
+		return patroniRESTCredentials{}, cfgcore.MakeError(
+			"%s and %s must be set together and must not be empty",
+			patroniRestAPIUsernameEnv, patroniRestAPIPasswordEnv,
+		)
+	}
+	return patroniRESTCredentials{username: username, password: password}, nil
+}
+
+func (p *pgPatroniCommandChannel) sendRestRequest(ctx context.Context, body string, url string, method string) (string, error) {
 	client := &http.Client{}
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
@@ -186,6 +216,15 @@ func sendRestRequest(ctx context.Context, body string, url string, method string
 
 	// set content-type header to JSON
 	req.Header.Set("Content-Type", "application/json")
+	if p.credentials.username != "" || p.credentials.password != "" {
+		if p.credentials.username == "" || p.credentials.password == "" {
+			return "", cfgcore.MakeError(
+				"%s and %s must be set together",
+				patroniRestAPIUsernameEnv, patroniRestAPIPasswordEnv,
+			)
+		}
+		req.SetBasicAuth(p.credentials.username, p.credentials.password)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -195,6 +234,12 @@ func sendRestRequest(ctx context.Context, body string, url string, method string
 	response, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", cfgcore.MakeError(
+			"patroni %s request returned %s",
+			method, resp.Status,
+		)
 	}
 	return string(response), nil
 }
