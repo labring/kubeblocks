@@ -1018,25 +1018,65 @@ func clusterServiceGetter(ctx context.Context, cli client.Reader, namespace, clu
 }
 
 func compServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName, name string) (any, error) {
+	podService := false
 	svcName, err := func() (string, error) {
-		if len(name) == 0 {
-			return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
-		}
-
 		// resolve service name from referenced component definition
-		_, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
+		comp, compDef, err := GetCompNCompDefByName(ctx, cli, namespace, FullName(clusterName, compName))
 		if err != nil {
+			if len(name) == 0 && apierrors.IsNotFound(err) {
+				return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
+			}
 			return "", err
 		}
+		componentServices := map[string]appsv1alpha1.ComponentService{}
+		for i, svc := range comp.Spec.Services {
+			componentServices[svc.Name] = comp.Spec.Services[i]
+		}
 		for _, svc := range compDef.Spec.Services {
-			if svc.Name == name {
-				return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
+			if len(name) > 0 && svc.Name != name {
+				continue
 			}
+			if len(name) == 0 && len(svc.ServiceName) > 0 {
+				continue
+			}
+			if componentService, ok := componentServices[svc.Name]; ok {
+				svc.PodService = componentService.PodService
+			}
+			podService = svc.PodService != nil && *svc.PodService
+			return constant.GenerateComponentServiceName(clusterName, compName, svc.ServiceName), nil
+		}
+		if len(name) == 0 {
+			return constant.GenerateDefaultComponentServiceName(clusterName, compName), nil
 		}
 		return "", fmt.Errorf("service %s not defined in the component definition that component %s used", name, compName)
 	}()
 	if err != nil {
 		return nil, err
+	}
+
+	listPodServices := func() (any, error) {
+		svcList := &corev1.ServiceList{}
+		matchingLabels := client.MatchingLabels(constant.GetComponentWellKnownLabels(clusterName, compName))
+		if listErr := cli.List(ctx, svcList, client.InNamespace(namespace), matchingLabels, inDataContext()); listErr != nil {
+			return nil, listErr
+		}
+		objs := make([]*corev1.Service, 0)
+		for i, svc := range svcList.Items {
+			if isPodServiceName(svcName, svc.Name) {
+				objs = append(objs, &svcList.Items[i])
+			}
+		}
+		if len(objs) == 0 {
+			return nil, apierrors.NewNotFound(corev1.Resource("service"), name)
+		}
+		return &resolvedServiceObj{podServices: objs}, nil
+	}
+
+	// A pod-service is exposed through one Service per Pod. Ignore a stale
+	// component-level Service with the same prefix, otherwise port vars are
+	// resolved to a single value without the required service-name mapping.
+	if podService {
+		return listPodServices()
 	}
 
 	key := types.NamespacedName{
@@ -1053,23 +1093,20 @@ func compServiceGetter(ctx context.Context, cli client.Reader, namespace, cluste
 	}
 
 	// fall-back to list services and find the matched prefix
-	svcList := &corev1.ServiceList{}
-	matchingLabels := client.MatchingLabels(constant.GetComponentWellKnownLabels(clusterName, compName))
-	err = cli.List(ctx, svcList, matchingLabels, inDataContext())
-	if err != nil {
-		return nil, err
+	return listPodServices()
+}
+
+func isPodServiceName(serviceName, name string) bool {
+	ordinal, ok := strings.CutPrefix(name, serviceName+"-")
+	if !ok || len(ordinal) == 0 {
+		return false
 	}
-	objs := make([]*corev1.Service, 0)
-	podServiceNamePrefix := fmt.Sprintf("%s-", svcName)
-	for i, svc := range svcList.Items {
-		if strings.HasPrefix(svc.Name, podServiceNamePrefix) {
-			objs = append(objs, &svcList.Items[i])
+	for _, char := range ordinal {
+		if char < '0' || char > '9' {
+			return false
 		}
 	}
-	if len(objs) == 0 {
-		return nil, apierrors.NewNotFound(corev1.Resource("service"), name)
-	}
-	return &resolvedServiceObj{podServices: objs}, nil
+	return true
 }
 
 func headlessCompServiceGetter(ctx context.Context, cli client.Reader, namespace, clusterName, compName string) (any, error) {

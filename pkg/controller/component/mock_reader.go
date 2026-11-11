@@ -36,6 +36,9 @@ type mockReader struct {
 func (r *mockReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	for _, o := range r.objs {
 		// ignore the GVK check
+		if reflect.TypeOf(o) != reflect.TypeOf(obj) {
+			continue
+		}
 		if client.ObjectKeyFromObject(o) == key {
 			reflect.ValueOf(obj).Elem().Set(reflect.ValueOf(o).Elem())
 			return nil
@@ -56,6 +59,9 @@ func (r *mockReader) List(ctx context.Context, list client.ObjectList, opts ...c
 		opt.ApplyToList(listOpts)
 	}
 	for i, o := range r.objs {
+		if len(listOpts.Namespace) > 0 && o.GetNamespace() != listOpts.Namespace {
+			continue
+		}
 		// ignore the GVK check
 		if listOpts.LabelSelector != nil {
 			if listOpts.LabelSelector.Matches(labels.Set(o.GetLabels())) {
