@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -179,6 +180,209 @@ func TestPatroniRESTURL(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestPatroniRESTCredentialsFromPod(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "patroni-auth", Namespace: "default"},
+		Data: map[string][]byte{
+			"username": []byte("patroni-user"),
+			"password": []byte("patroni-password"),
+		},
+	}
+	secretRef := func(key string) corev1.EnvVar {
+		return corev1.EnvVar{
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name},
+					Key:                  key,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name             string
+		envs             []corev1.EnvVar
+		objects          []client.Object
+		containerCount   int
+		overrideUsername string
+		expected         patroniRESTCredentials
+		expectedErr      string
+	}{{
+		name: "no credentials",
+	}, {
+		name: "direct credentials",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, Value: "direct-user"},
+			{Name: patroniRESTAPIPasswordEnv, Value: "direct-password"},
+		},
+		expected: patroniRESTCredentials{username: "direct-user", password: "direct-password"},
+	}, {
+		name: "secretKeyRef credentials",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, ValueFrom: secretRef("username").ValueFrom},
+			{Name: patroniRESTAPIPasswordEnv, ValueFrom: secretRef("password").ValueFrom},
+		},
+		objects:  []client.Object{secret},
+		expected: patroniRESTCredentials{username: "patroni-user", password: "patroni-password"},
+	}, {
+		name: "identical credentials in multiple containers",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, ValueFrom: secretRef("username").ValueFrom},
+			{Name: patroniRESTAPIPasswordEnv, ValueFrom: secretRef("password").ValueFrom},
+		},
+		containerCount: 2,
+		objects:        []client.Object{secret},
+		expected:       patroniRESTCredentials{username: "patroni-user", password: "patroni-password"},
+	}, {
+		name: "conflicting credentials in multiple containers",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, Value: "direct-user"},
+			{Name: patroniRESTAPIPasswordEnv, Value: "direct-password"},
+		},
+		containerCount:   2,
+		overrideUsername: "conflicting-user",
+		expectedErr:      "different values",
+	}, {
+		name: "partial credentials",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, Value: "direct-user"},
+		},
+		expectedErr: "must be set together",
+	}, {
+		name: "missing secret",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, ValueFrom: secretRef("username").ValueFrom},
+			{Name: patroniRESTAPIPasswordEnv, ValueFrom: secretRef("password").ValueFrom},
+		},
+		expectedErr: `get secret "patroni-auth"`,
+	}, {
+		name: "missing secret key",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, ValueFrom: secretRef("missing-username").ValueFrom},
+			{Name: patroniRESTAPIPasswordEnv, ValueFrom: secretRef("password").ValueFrom},
+		},
+		objects:     []client.Object{secret},
+		expectedErr: `has no key "missing-username"`,
+	}, {
+		name: "empty secret value",
+		envs: []corev1.EnvVar{
+			{Name: patroniRESTAPIUsernameEnv, ValueFrom: secretRef("username").ValueFrom},
+			{Name: patroniRESTAPIPasswordEnv, ValueFrom: secretRef("password").ValueFrom},
+		},
+		objects: []client.Object{
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: secret.Name, Namespace: secret.Namespace},
+				Data: map[string][]byte{
+					"username": []byte("patroni-user"),
+					"password": {},
+				},
+			},
+		},
+		expectedErr: "is empty",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			containers := make([]corev1.Container, tt.containerCount)
+			for i := range containers {
+				envs := make([]corev1.EnvVar, len(tt.envs))
+				copy(envs, tt.envs)
+				if tt.overrideUsername != "" && i > 0 {
+					envs[0].Value = tt.overrideUsername
+					envs[0].ValueFrom = nil
+				}
+				containers[i] = corev1.Container{Env: envs}
+			}
+			if len(containers) == 0 {
+				containers = []corev1.Container{{Env: tt.envs}}
+			}
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "leader", Namespace: "default"},
+				Spec:       corev1.PodSpec{Containers: containers},
+			}
+			builder := fake.NewClientBuilder().WithScheme(rscheme)
+			if len(tt.objects) > 0 {
+				builder = builder.WithObjects(tt.objects...)
+			}
+			credentials, err := patroniRESTCredentialsFromPod(context.Background(), builder.Build(), pod)
+
+			if tt.expectedErr != "" {
+				require.ErrorContains(t, err, tt.expectedErr)
+				require.NotContains(t, err.Error(), "patroni-password")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, credentials)
+		})
+	}
+}
+
+func TestHTTPPatroniConfigClientBasicAuth(t *testing.T) {
+	t.Parallel()
+
+	requests := make([]string, 0)
+	config := patroniDynamicConfig{
+		PostgreSQL: patroniPostgreSQLConfig{
+			PgHBA: []string{"local all all trust"},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "patroni-user" || password != "patroni-password" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/config":
+			require.NoError(t, json.NewEncoder(w).Encode(config))
+		case r.Method == http.MethodPatch && r.URL.Path == "/config":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&config))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/reload":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &httpPatroniConfigClient{
+		client:      server.Client(),
+		credentials: patroniRESTCredentials{username: "patroni-user", password: "patroni-password"},
+	}
+	_, err := client.GetConfig(context.Background(), server.URL)
+	require.NoError(t, err)
+	require.NoError(t, client.PatchConfig(context.Background(), server.URL, patroniDynamicConfig{
+		PostgreSQL: patroniPostgreSQLConfig{
+			PgHBA: []string{"host all all 0.0.0.0/0 md5"},
+		},
+	}))
+	require.NoError(t, client.Reload(context.Background(), server.URL))
+	require.Equal(t, []string{
+		"GET /config",
+		"PATCH /config",
+		"POST /reload",
+	}, requests)
+}
+
+func TestHTTPPatroniConfigClientUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := &httpPatroniConfigClient{
+		client:      server.Client(),
+		credentials: patroniRESTCredentials{username: "patroni-user", password: "invalid-password"},
+	}
+	_, err := client.GetConfig(context.Background(), server.URL)
+
+	require.ErrorContains(t, err, "401 Unauthorized")
+}
+
 func TestHTTPPatroniConfigClient(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +393,7 @@ func TestHTTPPatroniConfigClient(t *testing.T) {
 		},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Empty(t, r.Header.Get("Authorization"))
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/config":

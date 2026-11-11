@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
@@ -56,6 +57,9 @@ const (
 	patroniHTTPTimeout              = 10 * time.Second
 	patroniMaxResponseBytes         = 1 << 20
 	patroniDefaultRESTPort          = int32(8008)
+
+	patroniRESTAPIUsernameEnv = "PATRONI_RESTAPI_USERNAME"
+	patroniRESTAPIPasswordEnv = "PATRONI_RESTAPI_PASSWORD"
 
 	pgHBAConfigFile = "pg_hba.conf"
 )
@@ -115,10 +119,15 @@ func (t *componentPatroniDCSRepairTransformer) Transform(ctx graph.TransformCont
 		t.markRepairFailed(transCtx, err)
 		return intctrlutil.NewDelayedRequeueError(patroniDCSRepairRequeueInterval, err.Error())
 	}
+	credentials, err := patroniRESTCredentialsFromPod(transCtx.Context, transCtx.Client, leaderPod)
+	if err != nil {
+		t.markRepairFailed(transCtx, err)
+		return intctrlutil.NewDelayedRequeueError(patroniDCSRepairRequeueInterval, err.Error())
+	}
 
 	patroniClient := t.patroniClient
 	if patroniClient == nil {
-		patroniClient = newHTTPPatroniConfigClient()
+		patroniClient = newHTTPPatroniConfigClient(credentials)
 	}
 	repaired, err := repairPatroniPgHBA(
 		transCtx.Context,
@@ -170,6 +179,94 @@ func (t *componentPatroniDCSRepairTransformer) getLeaderPod(
 		return nil, fmt.Errorf("postgresql patroni dcs repair: get leader pod %q: %w", podName, err)
 	}
 	return pod, nil
+}
+
+func patroniRESTCredentialsFromPod(
+	ctx context.Context,
+	reader client.Reader,
+	pod *corev1.Pod,
+) (patroniRESTCredentials, error) {
+	credentials := patroniRESTCredentials{}
+	envs := make(map[string]string, 2)
+	for _, container := range pod.Spec.Containers {
+		for _, env := range container.Env {
+			if env.Name != patroniRESTAPIUsernameEnv && env.Name != patroniRESTAPIPasswordEnv {
+				continue
+			}
+			value, err := patroniRESTCredentialValue(ctx, reader, pod.Namespace, env)
+			if err != nil {
+				return credentials, err
+			}
+			// Component-level vars are injected into every container. Accept the
+			// same credential repeatedly, but reject conflicting definitions.
+			if existing, exists := envs[env.Name]; exists && existing != value {
+				return credentials, fmt.Errorf(
+					"postgresql patroni dcs repair: %s is defined more than once with different values in leader pod %q",
+					env.Name, pod.Name,
+				)
+			}
+			envs[env.Name] = value
+		}
+	}
+
+	username, hasUsername := envs[patroniRESTAPIUsernameEnv]
+	password, hasPassword := envs[patroniRESTAPIPasswordEnv]
+	if hasUsername != hasPassword {
+		return credentials, fmt.Errorf(
+			"postgresql patroni dcs repair: %s and %s must be set together",
+			patroniRESTAPIUsernameEnv, patroniRESTAPIPasswordEnv,
+		)
+	}
+	if !hasUsername {
+		return credentials, nil
+	}
+	if username == "" || password == "" {
+		return credentials, fmt.Errorf(
+			"postgresql patroni dcs repair: %s and %s must not be empty",
+			patroniRESTAPIUsernameEnv, patroniRESTAPIPasswordEnv,
+		)
+	}
+	return patroniRESTCredentials{username: username, password: password}, nil
+}
+
+func patroniRESTCredentialValue(
+	ctx context.Context,
+	reader client.Reader,
+	namespace string,
+	env corev1.EnvVar,
+) (string, error) {
+	if env.Value != "" {
+		return env.Value, nil
+	}
+	if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+		return "", fmt.Errorf(
+			"postgresql patroni dcs repair: %s must use a secretKeyRef or a non-empty value",
+			env.Name,
+		)
+	}
+	secretRef := env.ValueFrom.SecretKeyRef
+	secret := &corev1.Secret{}
+	secretKey := client.ObjectKey{Namespace: namespace, Name: secretRef.Name}
+	if err := reader.Get(ctx, secretKey, secret, inDataContext4C()); err != nil {
+		return "", fmt.Errorf(
+			"postgresql patroni dcs repair: get secret %q for %s: %w",
+			secretRef.Name, env.Name, err,
+		)
+	}
+	value, ok := secret.Data[secretRef.Key]
+	if !ok {
+		return "", fmt.Errorf(
+			"postgresql patroni dcs repair: secret %q has no key %q for %s",
+			secretRef.Name, secretRef.Key, env.Name,
+		)
+	}
+	if len(value) == 0 {
+		return "", fmt.Errorf(
+			"postgresql patroni dcs repair: secret %q key %q for %s is empty",
+			secretRef.Name, secretRef.Key, env.Name,
+		)
+	}
+	return string(value), nil
 }
 
 func leaderMemberPodName(runningITS *workloads.InstanceSet) string {
@@ -412,13 +509,20 @@ type patroniPostgreSQLConfig struct {
 	PgHBA []string `json:"pg_hba,omitempty"`
 }
 
-type httpPatroniConfigClient struct {
-	client *http.Client
+type patroniRESTCredentials struct {
+	username string
+	password string
 }
 
-func newHTTPPatroniConfigClient() *httpPatroniConfigClient {
+type httpPatroniConfigClient struct {
+	client      *http.Client
+	credentials patroniRESTCredentials
+}
+
+func newHTTPPatroniConfigClient(credentials patroniRESTCredentials) *httpPatroniConfigClient {
 	return &httpPatroniConfigClient{
-		client: &http.Client{Timeout: patroniHTTPTimeout},
+		client:      &http.Client{Timeout: patroniHTTPTimeout},
+		credentials: credentials,
 	}
 }
 
@@ -466,6 +570,12 @@ func (c *httpPatroniConfigClient) doJSON(req *http.Request, out any) error {
 }
 
 func (c *httpPatroniConfigClient) do(req *http.Request, out any) error {
+	if c.credentials.username != "" || c.credentials.password != "" {
+		if c.credentials.username == "" || c.credentials.password == "" {
+			return fmt.Errorf("postgresql patroni dcs repair: invalid patroni REST API credentials")
+		}
+		req.SetBasicAuth(c.credentials.username, c.credentials.password)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("postgresql patroni dcs repair: send %s %s: %w", req.Method, req.URL.Path, err)
