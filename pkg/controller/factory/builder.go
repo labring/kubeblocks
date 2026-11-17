@@ -493,6 +493,29 @@ func BuildCfgManagerContainer(sidecarRenderedParam *cfgcm.CfgManagerBuildParams)
 			},
 		)
 	}
+	// the config-manager reloads PostgreSQL parameters through the Patroni REST API,
+	// which requires Basic Authentication once restapi.authentication is enabled.
+	if sidecarRenderedParam.CharacterType == "postgresql" {
+		env = append(env, corev1.EnvVar{
+			Name: "PATRONI_RESTAPI_USERNAME",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					Key:                  "username",
+					LocalObjectReference: corev1.LocalObjectReference{Name: sidecarRenderedParam.SecreteName},
+				},
+			},
+		},
+			corev1.EnvVar{
+				Name: "PATRONI_RESTAPI_PASSWORD",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						Key:                  "password",
+						LocalObjectReference: corev1.LocalObjectReference{Name: sidecarRenderedParam.SecreteName},
+					},
+				},
+			},
+		)
+	}
 	containerBuilder := builder.NewContainerBuilder(sidecarRenderedParam.ManagerName).
 		AddCommands("env").
 		AddArgs("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$(TOOLS_PATH)").
