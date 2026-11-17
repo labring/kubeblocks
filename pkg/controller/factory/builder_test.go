@@ -51,6 +51,7 @@ var _ = Describe("builder", func() {
 	const proxyCompDefName = "proxy"
 	const mysqlCompName = "mysql"
 	const mysqlCharacterType = "mysql"
+	const postgresqlCharacterType = "postgresql"
 
 	allFieldsClusterDefObj := func(needCreate bool) *appsv1alpha1.ClusterDefinition {
 		By("By assure an clusterDefinition obj")
@@ -413,6 +414,38 @@ var _ = Describe("builder", func() {
 				"MYSQL_PASSWORD":      "password",
 				"MYSQL_ROOT_USER":     "username",
 				"MYSQL_ROOT_PASSWORD": "password",
+			} {
+				Expect(envByName).Should(HaveKey(name))
+				Expect(envByName[name].ValueFrom).ShouldNot(BeNil())
+				Expect(envByName[name].ValueFrom.SecretKeyRef).ShouldNot(BeNil())
+				Expect(envByName[name].ValueFrom.SecretKeyRef.Name).Should(Equal("test-secret"))
+				Expect(envByName[name].ValueFrom.SecretKeyRef.Key).Should(Equal(key))
+			}
+		})
+
+		It("builds config manager sidecar container with patroni rest api credentials", func() {
+			_, cluster, _ := newClusterObjs(nil)
+			sidecarRenderedParam := &cfgcm.CfgManagerBuildParams{
+				ManagerName:   "cfgmgr",
+				CharacterType: postgresqlCharacterType,
+				SecreteName:   "test-secret",
+				Image:         constant.KBToolsImage,
+				Args:          []string{},
+				Envs:          []corev1.EnvVar{},
+				Volumes:       []corev1.VolumeMount{},
+				Cluster:       cluster,
+			}
+			configmap, err := BuildCfgManagerContainer(sidecarRenderedParam)
+			Expect(err).Should(BeNil())
+			Expect(configmap).ShouldNot(BeNil())
+
+			envByName := make(map[string]corev1.EnvVar)
+			for _, env := range configmap.Env {
+				envByName[env.Name] = env
+			}
+			for name, key := range map[string]string{
+				"PATRONI_RESTAPI_USERNAME": "username",
+				"PATRONI_RESTAPI_PASSWORD": "password",
 			} {
 				Expect(envByName).Should(HaveKey(name))
 				Expect(envByName[name].ValueFrom).ShouldNot(BeNil())
