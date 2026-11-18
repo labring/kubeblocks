@@ -121,7 +121,7 @@ func handleRoleChangedEvent(cli client.Client, reqCtx intctrlutil.RequestCtx, _ 
 		}
 		// event belongs to old pod with the same name, ignore it
 		if pod.Name == pair.PodName && string(pod.UID) != pair.PodUID {
-			return pair.RoleName, nil
+			continue
 		}
 
 		// compare the version of the current role snapshot with the last version recorded in the pod annotation,
@@ -131,7 +131,7 @@ func handleRoleChangedEvent(cli client.Client, reqCtx intctrlutil.RequestCtx, _ 
 
 			if snapshot.Version <= lastSnapshotVersion && !strings.Contains(lastSnapshotVersion, ":") {
 				reqCtx.Log.Info("stale role snapshot received, ignore it", "snapshot", snapshot)
-				return pair.RoleName, nil
+				continue
 			}
 		}
 
@@ -147,7 +147,18 @@ func handleRoleChangedEvent(cli client.Client, reqCtx intctrlutil.RequestCtx, _ 
 		}
 		reqCtx.Log.Info("handle role change event", "pod", pod.Name, "role", role, "originalRole", message.OriginalRole)
 
-		if err := updatePodRoleLabel(cli, reqCtx, *its, pod, pair.RoleName, snapshot.Version); err != nil {
+		keepLastKnownRole := len(snapshot.PodRoleNamePairs) == 1 &&
+			pair.PodName == event.InvolvedObject.Name &&
+			pair.RoleName == ""
+		if err := updatePodRoleLabel(
+			cli,
+			reqCtx,
+			*its,
+			pod,
+			pair.RoleName,
+			snapshot.Version,
+			keepLastKnownRole,
+		); err != nil {
 			return "", err
 		}
 	}
@@ -203,7 +214,7 @@ func parseProbeEventMessage(reqCtx intctrlutil.RequestCtx, event *corev1.Event) 
 
 // updatePodRoleLabel updates pod role label when internal container role changed
 func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
-	its workloads.InstanceSet, pod *corev1.Pod, roleName string, version string) error {
+	its workloads.InstanceSet, pod *corev1.Pod, roleName string, version string, keepLastKnownRole bool) error {
 	ctx := reqCtx.Ctx
 	roleMap := composeRoleMap(its)
 	// role not defined in CR, ignore it
@@ -230,6 +241,15 @@ func updatePodRoleLabel(cli client.Client, reqCtx intctrlutil.RequestCtx,
 		newPod.Annotations = map[string]string{}
 	}
 	newPod.Annotations[constant.LastRoleSnapshotVersionAnnotationKey] = version
+	if ok {
+		newPod.Annotations[constant.LastKnownRoleAnnotationKey] = role.Name
+	} else if keepLastKnownRole {
+		if newPod.Annotations[constant.LastKnownRoleAnnotationKey] == "" && oldRoleLabel != "" {
+			newPod.Annotations[constant.LastKnownRoleAnnotationKey] = oldRoleLabel
+		}
+	} else {
+		delete(newPod.Annotations, constant.LastKnownRoleAnnotationKey)
+	}
 
 	if err := cli.Update(ctx, newPod, inDataContext()); err != nil {
 		reqCtx.Log.Error(err, "failed to update pod role label", "pod", pod.Name, "newRole", roleName)

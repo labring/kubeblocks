@@ -20,13 +20,21 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package operations
 
 import (
+	"context"
 	"fmt"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
@@ -35,6 +43,184 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/generics"
 	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
 )
+
+func TestValidateAutoFailover(t *testing.T) {
+	const (
+		namespace     = "default"
+		clusterName   = "mongodb"
+		componentName = "mongodb"
+		oldPrimary    = "mongodb-0"
+	)
+	oldPrimaryUID := types.UID("old-primary-uid")
+	notReadySince := metav1.NewTime(time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC))
+
+	newPod := func(name string, uid types.UID) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: namespace,
+				Name:      name,
+				UID:       uid,
+				Labels:    constant.GetComponentWellKnownLabels(clusterName, componentName),
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionFalse,
+					LastTransitionTime: notReadySince,
+				}},
+			},
+		}
+	}
+	newOpsRequest := func() *appsv1alpha1.OpsRequest {
+		return &appsv1alpha1.OpsRequest{
+			ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: metav1.Now(),
+				Annotations: map[string]string{
+					AutoFailoverAnnotation:              AutoFailoverAnnotationValue,
+					AutoFailoverOldPrimaryPodAnnotation: oldPrimary,
+					AutoFailoverOldPrimaryUIDAnnotation: string(oldPrimaryUID),
+					AutoFailoverNotReadySinceAnnotation: notReadySince.Format(time.RFC3339Nano),
+				},
+			},
+			Spec: appsv1alpha1.OpsRequestSpec{
+				TimeoutSeconds: pointer.Int32(AutoFailoverOpsTimeoutSeconds),
+			},
+		}
+	}
+	validate := func(
+		t *testing.T,
+		opsRequest *appsv1alpha1.OpsRequest,
+		pods ...*corev1.Pod,
+	) (bool, *corev1.Pod, error) {
+		t.Helper()
+		scheme := runtime.NewScheme()
+		if err := corev1.AddToScheme(scheme); err != nil {
+			t.Fatal(err)
+		}
+		objects := make([]client.Object, 0, len(pods))
+		for _, pod := range pods {
+			objects = append(objects, pod)
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+		cluster := &appsv1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: clusterName},
+		}
+		synthesized := &component.SynthesizedComponent{
+			Name: componentName,
+			Roles: []appsv1alpha1.ReplicaRole{{
+				Name:        "primary",
+				Serviceable: true,
+				Writable:    true,
+			}},
+		}
+		automatic, needed, primary, err := validateAutoFailover(
+			context.Background(),
+			cli,
+			cluster,
+			opsRequest,
+			synthesized,
+			&appsv1alpha1.Switchover{InstanceName: KBSwitchoverCandidateInstanceForAnyPod},
+		)
+		if !automatic {
+			t.Fatal("validateAutoFailover() did not recognize the automatic request")
+		}
+		return needed, primary, err
+	}
+
+	t.Run("current primary remains eligible", func(t *testing.T) {
+		pod := newPod(oldPrimary, oldPrimaryUID)
+		pod.Labels[constant.RoleLabelKey] = "primary"
+		needed, primary, err := validate(t, newOpsRequest(), pod)
+		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("primary unknown after node loss remains eligible", func(t *testing.T) {
+		pod := newPod(oldPrimary, oldPrimaryUID)
+		pod.Labels[constant.RoleLabelKey] = "primary"
+		pod.Status.Conditions[0].Status = corev1.ConditionUnknown
+		pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now())
+		needed, primary, err := validate(t, newOpsRequest(), pod)
+		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("last known primary remains eligible after local role clear", func(t *testing.T) {
+		pod := newPod(oldPrimary, oldPrimaryUID)
+		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		needed, primary, err := validate(t, newOpsRequest(), pod)
+		if err != nil || !needed || primary == nil || primary.Name != oldPrimary {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("new current primary waits until ready", func(t *testing.T) {
+		oldPod := newPod(oldPrimary, oldPrimaryUID)
+		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
+		newPrimary.Labels[constant.RoleLabelKey] = "primary"
+		needed, primary, err := validate(t, newOpsRequest(), oldPod, newPrimary)
+		if err == nil || needed || primary != nil {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("new ready primary skips the old stepdown", func(t *testing.T) {
+		oldPod := newPod(oldPrimary, oldPrimaryUID)
+		oldPod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		newPrimary := newPod("mongodb-1", types.UID("new-primary-uid"))
+		newPrimary.Labels[constant.RoleLabelKey] = "primary"
+		newPrimary.Status.Conditions[0].Status = corev1.ConditionTrue
+		needed, primary, err := validate(t, newOpsRequest(), oldPod, newPrimary)
+		if err != nil || needed || primary != nil {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("ambiguous last known primaries wait", func(t *testing.T) {
+		first := newPod(oldPrimary, oldPrimaryUID)
+		first.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		second := newPod("mongodb-1", types.UID("second-uid"))
+		second.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		needed, primary, err := validate(t, newOpsRequest(), first, second)
+		if err == nil || needed || primary != nil {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+		if !intctrlutil.IsRequeueError(err) {
+			t.Fatalf("validateAutoFailover() error = %T, want RequeueError", err)
+		}
+	})
+
+	t.Run("stopped old primary waits for majority election", func(t *testing.T) {
+		pod := newPod(oldPrimary, oldPrimaryUID)
+		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		pod.Status.Phase = corev1.PodFailed
+		needed, primary, err := validate(t, newOpsRequest(), pod)
+		if err == nil || needed || primary != nil {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+	})
+
+	t.Run("creating deadline expires as a fatal error", func(t *testing.T) {
+		opsRequest := newOpsRequest()
+		opsRequest.Status.StartTimestamp = metav1.NewTime(
+			time.Now().Add(-time.Duration(AutoFailoverOpsTimeoutSeconds+1) * time.Second),
+		)
+		pod := newPod(oldPrimary, oldPrimaryUID)
+		pod.Annotations = map[string]string{constant.LastKnownRoleAnnotationKey: "primary"}
+		pod.Status.Phase = corev1.PodFailed
+		needed, primary, err := validate(t, opsRequest, pod)
+		if err == nil || needed || primary != nil {
+			t.Fatalf("validateAutoFailover() = needed %v, primary %v, err %v", needed, primary, err)
+		}
+		if !intctrlutil.IsTargetError(err, intctrlutil.ErrorTypeFatal) {
+			t.Fatalf("validateAutoFailover() error = %T, want fatal error", err)
+		}
+	})
+}
 
 var _ = Describe("Switchover Util", func() {
 

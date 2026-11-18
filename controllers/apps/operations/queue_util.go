@@ -50,7 +50,9 @@ func DequeueOpsRequestInClusterAnnotation(ctx context.Context, cli client.Client
 	if index == -1 {
 		return nil
 	}
-	if opsRes.OpsRequest.Status.Phase == appsv1alpha1.OpsFailedPhase && index == 0 {
+	if opsRes.OpsRequest.Status.Phase == appsv1alpha1.OpsFailedPhase &&
+		index == 0 &&
+		!isAutoFailoverOpsRequest(opsRes.OpsRequest) {
 		var newOpsRequestSlice []appsv1alpha1.OpsRecorder
 		// 1. update all pending opsRequest phase to Cancelled if the head opsRequest is Failed.
 		for i := 1; i < len(opsRequestSlice); i++ {
